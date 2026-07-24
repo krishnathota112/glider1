@@ -534,11 +534,16 @@ def get_l0_path():
     if os.path.exists(p1) and os.path.getsize(p1) > 100_000:
         return p1
 
-    # Collect all NC files outside output/ and cache/
+    # Collect all NC files outside output/, cache/, gridfiles/, and profiles/
     all_nc = []
     for root, _dirs, files in os.walk(DATA_DIR):
         rel = os.path.relpath(root, DATA_DIR).lower()
+        # Skip output and cache trees (pipeline-generated)
         if rel.startswith("output") or rel.startswith("cache"):
+            continue
+        # Skip any folder whose path contains gridfiles or profiles —
+        # those hold gridded/per-profile NetCDFs, not timeseries L0 files
+        if "gridfiles" in rel or "profiles" in rel:
             continue
         for fn in files:
             if fn.endswith(".nc"):

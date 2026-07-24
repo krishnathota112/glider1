@@ -101,7 +101,7 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
         ds_masked = ds
 
     for p_num in unique:
-        mask = (ds_masked.profile_index == p_num)
+        mask = (ds_masked.profile_index.values == p_num)
         prof = ds_masked.isel(time=mask)
         prof.attrs["profile_id"] = int(p_num)
         if "profile_direction" in prof:
