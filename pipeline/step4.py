@@ -120,7 +120,8 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
 
 # ── Grid generation ─────────────────────────────────────────────
 
-def _interp_profile_to_grid(d_arr, v_arr, depth_centers):
+def _interp_profile_to_grid(d_arr, v_arr, depth_centers,
+                            min_points=4, min_depth_coverage_frac=0.15):
     """
     Interpolate a single profile onto the regular depth grid.
 
@@ -128,9 +129,21 @@ def _interp_profile_to_grid(d_arr, v_arr, depth_centers):
     glider data is essentially a continuous profile sampled every few meters.
     Only interpolates WITHIN the measured depth range (no extrapolation).
 
+    Bug 2 fix: profiles with too few points or insufficient vertical coverage
+    are skipped (return all-NaN) rather than interpolating across the full
+    depth range, which creates thin jagged vine artefacts in section plots.
+
+    min_points            : minimum number of valid measurement points required
+                            to attempt interpolation (default 4)
+    min_depth_coverage_frac : minimum fraction of the grid depth range that the
+                            profile must span to be interpolated (default 0.15,
+                            i.e. must cover at least 15% of the grid depth range)
+
     Returns array of length len(depth_centers) with NaN outside data range.
     """
     from scipy.interpolate import interp1d
+
+    grid_depth_range = float(depth_centers[-1] - depth_centers[0]) if len(depth_centers) > 1 else 1.0
 
     # Sort by depth (profiles can be ascending or descending)
     order = np.argsort(d_arr)
@@ -149,13 +162,33 @@ def _interp_profile_to_grid(d_arr, v_arr, depth_centers):
         d_sorted = d_unique
         v_sorted = v_unique
 
-    if len(d_sorted) < 2:
-        # Can't interpolate with fewer than 2 points
+    # --- Bug 2 fix: sparse/shallow profile guard ---
+    n_pts = len(d_sorted)
+    if n_pts < 2:
         result = np.full(len(depth_centers), np.nan)
-        if len(d_sorted) == 1:
+        if n_pts == 1:
             # Place single point in nearest bin
             idx = np.argmin(np.abs(depth_centers - d_sorted[0]))
             result[idx] = v_sorted[0]
+        return result
+
+    if n_pts < min_points:
+        # Too few points to produce a meaningful interpolation
+        result = np.full(len(depth_centers), np.nan)
+        for i in range(n_pts):
+            idx = np.argmin(np.abs(depth_centers - d_sorted[i]))
+            result[idx] = v_sorted[i]
+        return result
+
+    profile_depth_span = float(d_sorted[-1] - d_sorted[0])
+    if grid_depth_range > 0 and (profile_depth_span / grid_depth_range) < min_depth_coverage_frac:
+        # Profile covers less than min_depth_coverage_frac of the grid — don't
+        # interpolate, just bin-place the raw points so they show as dots, not
+        # a smeared column across the full grid depth.
+        result = np.full(len(depth_centers), np.nan)
+        for i in range(n_pts):
+            idx = np.argmin(np.abs(depth_centers - d_sorted[i]))
+            result[idx] = v_sorted[i]
         return result
 
     # Interpolate — only within the measured depth range (bounds_error=False

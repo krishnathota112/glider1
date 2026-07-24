@@ -141,6 +141,99 @@ def pre_clean(ds):
 
     n_clean = len(ds.time)
     print(f"  Pre-cleaning: {n_orig} -> {n_clean} observations (removed {n_orig - n_clean})")
+
+    # ------------------------------------------------------------------
+    # Bug 1 fix: Auto-segmentation — strip shallow test-dive data by
+    # looking at actual signal (max depth per profile), not date heuristics.
+    # ------------------------------------------------------------------
+    if "profile_index" in ds:
+        ds = _strip_shallow_test_dives(ds)
+
+    return ds
+
+
+def _strip_shallow_test_dives(ds):
+    """
+    Remove pre-deployment shallow test dives that appear before the real
+    deployment segment. Detection is purely signal-based — no hardcoded dates.
+
+    Algorithm
+    ---------
+    1. Compute max depth per profile.
+    2. Find the "real deployment depth" as the 75th percentile of all profile
+       max-depths. Test dives are typically < 20% of this value.
+    3. Identify a contiguous block of shallow profiles at the START of the
+       timeseries (before the first deep profile that exceeds the threshold).
+       Only the leading shallow block is removed — shallow profiles elsewhere
+       (e.g. end-of-deployment recovery) are preserved.
+    4. If no clear shallow/deep separation exists (all profiles are similar
+       depth), nothing is removed.
+
+    This generalises across deployments: it works for a 150 m deployment with
+    20 m test dives, a 1000 m deployment with 50 m test dives, etc.
+    """
+    pi_vals = ds.profile_index.values
+    depth_var = "depth" if "depth" in ds else "pressure"
+    if depth_var not in ds:
+        return ds
+
+    d_vals = ds[depth_var].values
+    unique_profiles = np.unique(pi_vals[np.isfinite(pi_vals)])
+    if len(unique_profiles) < 5:
+        return ds  # not enough profiles to make a reliable decision
+
+    # Max depth per profile
+    max_depths = {}
+    for p in unique_profiles:
+        mask = pi_vals == p
+        d_p = d_vals[mask]
+        finite_d = d_p[np.isfinite(d_p)]
+        max_depths[p] = float(np.max(finite_d)) if len(finite_d) > 0 else 0.0
+
+    all_max = np.array([max_depths[p] for p in unique_profiles])
+
+    # Real deployment depth: 75th percentile of all profile max depths.
+    # Using 75th (not median) makes it robust when many profiles are shallow.
+    real_depth = float(np.percentile(all_max, 75))
+    if real_depth < 20:
+        return ds  # deployment is inherently shallow — nothing to strip
+
+    # Test-dive threshold: profiles shallower than 20% of real deployment depth
+    # and at least 10 m shallower than real_depth are considered test dives.
+    shallow_thresh = max(min(real_depth * 0.20, real_depth - 10.0), 5.0)
+
+    # Find the first profile that clearly reaches deployment depth
+    first_deep_idx = None
+    for i, p in enumerate(unique_profiles):
+        if max_depths[p] >= real_depth * 0.50:
+            first_deep_idx = i
+            break
+
+    if first_deep_idx is None or first_deep_idx == 0:
+        return ds  # first profile is already deep — nothing to strip
+
+    # Check that the leading profiles really are shallow (test dives)
+    leading = unique_profiles[:first_deep_idx]
+    n_shallow_leading = sum(1 for p in leading if max_depths[p] < shallow_thresh)
+    frac_shallow = n_shallow_leading / len(leading)
+
+    if frac_shallow < 0.70:
+        # Leading block is not clearly all-shallow — be conservative, don't strip
+        return ds
+
+    # Strip the leading test-dive profiles
+    strip_profiles = set(leading)
+    keep_mask = np.ones(len(ds.time), dtype=bool)
+    for p in strip_profiles:
+        keep_mask[pi_vals == p] = False
+
+    n_stripped = int(np.sum(~keep_mask))
+    if n_stripped > 0:
+        ds = ds.isel(time=keep_mask)
+        print(f"  Pre-clean: depth-based segmentation removed {n_stripped} observations "
+              f"from {len(strip_profiles)} shallow test-dive profiles "
+              f"(max depth < {shallow_thresh:.0f} m, real deployment depth ~{real_depth:.0f} m)")
+
     return ds
 
 

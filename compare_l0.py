@@ -9,7 +9,14 @@ import numpy as np
 def summarize_nc(path, label):
     """Print summary stats for a NetCDF file."""
     try:
-        ds = xr.open_dataset(path)
+        try:
+            ds = xr.open_dataset(path)
+        except ValueError:
+            # Try explicit engine if auto-detection fails
+            try:
+                ds = xr.open_dataset(path, engine='netcdf4')
+            except Exception:
+                ds = xr.open_dataset(path, engine='scipy')
         print(f"\n{'='*60}")
         print(f"{label}")
         print(f"{'='*60}")
@@ -93,13 +100,20 @@ if __name__ == "__main__":
         if candidates:
             existing_l0 = candidates[0]
     
-    # Find pipeline output L0
+    # Find pipeline output L0 — check all likely subdirectories
     output_dir = os.path.join(data_dir, "output")
     pipeline_l0 = None
-    if os.path.isdir(output_dir):
-        candidates = glob.glob(os.path.join(output_dir, "incois_glider_*_L0.nc"))
-        if candidates:
-            pipeline_l0 = candidates[0]
+    search_dirs = [
+        output_dir,
+        os.path.join(output_dir, "L0-timeseries"),
+        os.path.join(output_dir, "l0-timeseries"),
+    ]
+    for sdir in search_dirs:
+        if os.path.isdir(sdir):
+            candidates = glob.glob(os.path.join(sdir, "incois_glider_*_L0.nc"))
+            if candidates:
+                pipeline_l0 = sorted(candidates)[-1]  # largest/latest
+                break
     
     # Compare
     print("\n" + "="*60)

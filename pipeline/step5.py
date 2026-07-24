@@ -60,6 +60,42 @@ VAR_LABELS = {
     "backscatter_700":       "Backscatter 700nm [m⁻¹]",
 }
 
+# Physical plausibility ranges for plot variables.
+# Values outside these are sentinel/corrupted — NaN them before colorscaling.
+# These are wider than QC ranges to avoid clipping real extremes while still
+# catching -9999 fill values and wildly wrong sensor outputs.
+_PLOT_PHYS_RANGE = {
+    "temperature":           (-3.0,   40.0),
+    "potential_temperature": (-3.0,   40.0),
+    "sci_water_temp":        (-3.0,   40.0),
+    "salinity":              ( 0.0,   45.0),
+    "practical_salinity":    ( 0.0,   45.0),
+    "oxygen_concentration":  (-5.0,  700.0),
+    "dissolved_oxygen":      (-5.0,  700.0),
+    "sci_oxy4_oxygen":       (-5.0,  700.0),
+    "chlorophyll":           (-1.0,  200.0),
+    "chlorophyll_flntu":     (-1.0,  200.0),
+    "sci_flbbcd_chlor_units":(-1.0,  200.0),
+    "cdom":                  (-1.0,  500.0),
+    "sci_flbbcd_cdom_units": (-1.0,  500.0),
+    "backscatter_700":       (-0.01,   1.0),
+}
+
+
+def _apply_phys_range(V, var_name):
+    """
+    NaN out values outside physical plausibility range before colorscaling.
+    Operates on a copy — never mutates the input array.
+    Returns the cleaned copy and the number of cells nulled.
+    """
+    Vc = V.copy()
+    lo, hi = _PLOT_PHYS_RANGE.get(var_name, (-np.inf, np.inf))
+    bad = np.isfinite(Vc) & ((Vc < lo) | (Vc > hi))
+    n_bad = int(np.sum(bad))
+    if n_bad > 0:
+        Vc[bad] = np.nan
+    return Vc, n_bad
+
 
 def _detect_plot_vars(ds):
     """
@@ -235,6 +271,14 @@ def _draw_pcolormesh(ax, t_vals, depth_vals, V, cmap, label, max_depth):
     depth_mask = depth_vals <= max_depth
     V_trim = V[:, depth_mask].copy()
     d_trim = depth_vals[depth_mask]
+
+    # --- Bug 3 fix: clamp physically impossible values before percentile ---
+    # Resolve the actual variable name from the slot label so we can look up
+    # the physical range. Fall back to the label itself if not in the table.
+    var_key = label  # label is the slot label, also the actual var name in most paths
+    V_trim, n_phys_bad = _apply_phys_range(V_trim, var_key)
+    if n_phys_bad > 0:
+        print(f"    {label}: nulled {n_phys_bad} physically-impossible values before colorscale")
 
     # Suppress isolated depth artefacts: NaN out depth bins where fewer than
     # 10% of profiles have data (removes interpolation artefacts and pressure
