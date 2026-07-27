@@ -689,7 +689,9 @@ def plot_ts_density(grid, plot_path=None):
     sigma-0 density contours overlaid.
     """
     print("  Generating T-S density diagram...")
-    VT = _get_2d(grid, "potential_temperature")
+    VT = _get_2d(grid, "temperature")
+    if VT is None:
+        VT = _get_2d(grid, "potential_temperature")
     VS = _get_2d(grid, "salinity")
     if VT is None or VS is None:
         print("  SKIP: T or S not 2D")
@@ -757,7 +759,7 @@ def plot_ts_density(grid, plot_path=None):
                 pass
 
         ax.set_xlabel("Salinity (PSU)", fontsize=11)
-        ax.set_ylabel("Potential Temperature (°C)", fontsize=11)
+        ax.set_ylabel("Temperature (°C)", fontsize=11)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.set_title(f"Coloured by {cb_label}", fontsize=11)
 
