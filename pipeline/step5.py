@@ -37,7 +37,7 @@ GAP_THRESHOLD_HOURS = 48
 # For each "slot", we try names in order until one is found in the dataset.
 PLOT_SLOTS = [
     # (slot_label, [candidate_var_names], cmap)
-    ("temperature",  ["potential_temperature", "temperature", "sci_water_temp"], "RdYlBu_r"),
+    ("temperature",  ["temperature", "potential_temperature", "sci_water_temp"], "RdYlBu_r"),
     ("salinity",     ["salinity", "practical_salinity"], "viridis"),
     ("oxygen",       ["oxygen_concentration", "dissolved_oxygen", "sci_oxy4_oxygen"], "viridis"),
     ("chlorophyll",  ["chlorophyll", "chlorophyll_flntu", "sci_flbbcd_chlor_units"], "viridis"),
@@ -918,7 +918,7 @@ def plot_individual_variables(l0_path, l1_path=None):
     os.makedirs(plots_dir, exist_ok=True)
 
     var_configs = [
-        ("potential_temperature", "temperature", "RdYlBu_r", "Celsius", None),
+        ("temperature", "temperature", "RdYlBu_r", "Celsius", None),
         ("salinity", "salinity", "viridis", "PSU", None),
         ("oxygen_concentration", "oxygen", "viridis", "umol/L", None),
         ("chlorophyll", "chlorophyll", "YlGn", "mg m-3", 200),
