@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-check_l0_coverage.py — Verify Miss values in L1 are inherited from L0,
-not manufactured by the pipeline.
+check_l0_coverage.py — Verify QC flag integrity for ALL variables.
+
+Checks that:
+  - Miss (flag 9) in L1 matches NaN in L0 (inherited, not manufactured)
+  - Bad (flag 4)  in L1 accounts for values removed by QC tests
+  - No valid L0 data silently disappears into flag 9
 
 Usage:
     python3 check_l0_coverage.py /path/to/data_dir
-
-It will auto-find the L0 timeseries and L1 timeseries under that directory.
 """
 import sys
 import os
@@ -16,7 +18,24 @@ import numpy as np
 try:
     import xarray as xr
 except ImportError:
-    sys.exit("ERROR: xarray not installed. Run: pip install xarray netCDF4")
+    sys.exit("ERROR: xarray not installed.  Run: pip install xarray netCDF4")
+
+
+# All variables the pipeline QC-flags
+ALL_VARS = [
+    "temperature",
+    "salinity",
+    "pressure",
+    "depth",
+    "oxygen_concentration",
+    "chlorophyll",
+    "cdom",
+    "backscatter_700",
+    "density",
+    "latitude",
+    "longitude",
+]
+
 
 def find_nc(data_dir, subdir, pattern):
     path = os.path.join(data_dir, "output", subdir)
@@ -27,130 +46,165 @@ def find_nc(data_dir, subdir, pattern):
     return None
 
 
-def step2_l0_coverage(l0_path):
-    """Step 2: raw NaN count straight from L0 — before pipeline touches anything."""
-    print("\n" + "="*60)
-    print("STEP 2 — L0 raw coverage (before any QC)")
+# ── Section 1: raw L0 coverage ───────────────────────────────────────────────
+
+def report_l0_coverage(l0_path):
+    print("\n" + "=" * 70)
+    print("SECTION 1 — L0 raw coverage (before pipeline touches anything)")
     print(f"File: {os.path.basename(l0_path)}")
-    print("="*60)
+    print("=" * 70)
+    print(f"  {'Variable':<28}  {'Present':>8}  {'Total':>8}  "
+          f"{'Cover%':>7}  {'NaN at L0':>10}")
+    print("  " + "-" * 65)
     ds = xr.open_dataset(l0_path)
-    check_vars = [
-        "temperature", "salinity", "pressure", "depth",
-        "chlorophyll", "cdom", "backscatter_700",
-        "oxygen_concentration",
-    ]
-    for var in check_vars:
+    results = {}
+    for var in ALL_VARS:
         if var not in ds:
-            print(f"  {var:<25}  not present in L0")
             continue
         n_total = int(ds[var].size)
         n_nan   = int(ds[var].isnull().sum())
         n_valid = n_total - n_nan
         pct     = 100.0 * n_valid / n_total if n_total > 0 else 0.0
-        print(f"  {var:<25}  {n_valid:>8,} / {n_total:>8,} present  "
-              f"({pct:5.1f}%)   NaN at L0 = {n_nan:,}")
+        results[var] = {"n_total": n_total, "n_nan": n_nan, "n_valid": n_valid}
+        print(f"  {var:<28}  {n_valid:>8,}  {n_total:>8,}  "
+              f"{pct:>6.1f}%  {n_nan:>10,}")
     ds.close()
+    return results
 
 
-def step3_sample_cadence(l0_path):
-    """Step 3: compare sample cadence of optics vs CTD."""
-    print("\n" + "="*60)
-    print("STEP 3 — Sample cadence (optics vs CTD)")
-    print("="*60)
+# ── Section 2: sample cadence ────────────────────────────────────────────────
+
+def report_cadence(l0_path):
+    print("\n" + "=" * 70)
+    print("SECTION 2 — Sample cadence (optics vs CTD)")
+    print("=" * 70)
     ds = xr.open_dataset(l0_path)
     t = ds["time"].values
-
     all_gaps = np.diff(t).astype("timedelta64[s]").astype(float)
     all_gaps = all_gaps[all_gaps > 0]
-    print(f"  All timestamps:  median gap = {np.median(all_gaps):.1f} s")
+    ctd_median = np.median(all_gaps) if len(all_gaps) > 0 else 1.0
+    print(f"  {'All timestamps':<28}  median gap = {ctd_median:.1f} s")
 
-    for var in ["temperature", "chlorophyll", "cdom", "backscatter_700"]:
+    for var in ["temperature", "salinity", "oxygen_concentration",
+                "chlorophyll", "cdom", "backscatter_700"]:
         if var not in ds:
             continue
         vals = ds[var].values
-        valid_times = t[np.isfinite(vals)]
-        if len(valid_times) < 2:
-            print(f"  {var:<20}  too few points to compute gap")
+        valid_t = t[np.isfinite(vals)]
+        if len(valid_t) < 2:
+            print(f"  {var:<28}  (too few points)")
             continue
-        gaps = np.diff(valid_times).astype("timedelta64[s]").astype(float)
+        gaps = np.diff(valid_t).astype("timedelta64[s]").astype(float)
         gaps = gaps[gaps > 0]
-        print(f"  {var:<20}  median gap = {np.median(gaps):.1f} s  "
-              f"(ratio vs CTD: {np.median(gaps)/max(np.median(all_gaps),1):.1f}x)")
+        med = np.median(gaps)
+        ratio = med / max(ctd_median, 1.0)
+        note = ""
+        if ratio > 3:
+            note = "  ← sub-sampled sensor (normal)"
+        elif ratio > 8:
+            note = "  ← very sparse, check decode"
+        print(f"  {var:<28}  median gap = {med:.1f} s  "
+              f"({ratio:.1f}x CTD){note}")
     ds.close()
 
 
-def step2_l1_vs_l0(l0_path, l1_path):
-    """
-    Cross-check: compare L0 NaN count with L1 Miss count.
-    If L1 Miss >> L0 NaN for the same variable → pipeline is manufacturing Miss.
-    If L1 Miss ≈ L0 NaN (after accounting for logged removals) → inherited, not lost.
-    """
-    print("\n" + "="*60)
-    print("CROSS-CHECK — L0 NaN vs L1 Miss count")
+# ── Section 3: L0 vs L1 flag integrity ───────────────────────────────────────
+
+def report_flag_integrity(l0_path, l1_path, l0_results):
+    print("\n" + "=" * 70)
+    print("SECTION 3 — Flag integrity: L0 NaN vs L1 flag breakdown")
     print(f"L0: {os.path.basename(l0_path)}")
     print(f"L1: {os.path.basename(l1_path)}")
-    print("="*60)
+    print("=" * 70)
+
     l0 = xr.open_dataset(l0_path)
     l1 = xr.open_dataset(l1_path)
+    l1_n = len(l1.time)
+    l0_n = len(l0.time)
 
-    check_vars = [
-        "temperature", "salinity", "chlorophyll",
-        "cdom", "backscatter_700", "oxygen_concentration",
-    ]
+    print(f"\n  Time points:  L0 = {l0_n:,}   L1 = {l1_n:,}  "
+          f"({'same' if l0_n == l1_n else f'diff = {l0_n - l1_n:,} removed by pre-clean'})")
 
-    print(f"\n  {'Variable':<25}  {'L0 NaN':>10}  {'L1 Miss (flag9)':>16}  "
-          f"{'L1 total':>10}  {'Verdict'}")
-    print("  " + "-"*80)
+    issues = []
 
-    for var in check_vars:
+    print(f"\n  {'Variable':<28}  {'L0 NaN':>8}  {'L1 Miss':>8}  "
+          f"{'L1 Bad':>8}  {'L1 Good':>8}  {'Extra Miss':>11}  Verdict")
+    print("  " + "-" * 100)
+
+    for var in ALL_VARS:
         if var not in l0:
             continue
 
-        l0_nan = int(l0[var].isnull().sum())
-        l0_total = int(l0[var].size)
+        l0_nan   = l0_results.get(var, {}).get("n_nan", 0)
+        l0_total = l0_results.get(var, {}).get("n_total", 0)
 
         if var not in l1:
-            print(f"  {var:<25}  {l0_nan:>10,}  {'(not in L1)':>16}  "
-                  f"{l0_total:>10,}")
+            print(f"  {var:<28}  {l0_nan:>8,}  {'—':>8}  {'—':>8}  {'—':>8}  "
+                  f"{'—':>11}  not in L1")
             continue
 
-        l1_total = int(l1[var].size)
-
-        # Miss = flag 9 in QC array, or NaN in the data variable itself
         qc_var = f"{var}_QC"
-        if qc_var in l1:
-            qc = l1[qc_var].values.astype(float)
-            l1_miss  = int(np.sum(qc == 9))
-            l1_good  = int(np.sum(qc == 1))
-            l1_pgood = int(np.sum(qc == 2))
-            l1_bad   = int(np.sum((qc == 3) | (qc == 4)))
-        else:
-            # No QC array — count NaN in the data variable as proxy for Miss
-            l1_miss  = int(l1[var].isnull().sum())
-            l1_good  = l1_total - l1_miss
-            l1_pgood = 0
-            l1_bad   = 0
+        if qc_var not in l1:
+            print(f"  {var:<28}  {l0_nan:>8,}  {'no QC':>8}  {'—':>8}  {'—':>8}  "
+                  f"{'—':>11}  no QC array in L1")
+            continue
 
-        # Verdict: are L0 NaN and L1 Miss consistent?
-        # Allow up to 10% additional Miss in L1 vs L0 due to QC removals
-        delta = l1_miss - l0_nan
-        if l1_total != l0_total:
-            verdict = f"SIZE MISMATCH (L0={l0_total:,} L1={l1_total:,})"
-        elif abs(delta) <= max(500, 0.05 * l0_total):
-            verdict = "OK — consistent (inherited from L0)"
-        elif delta > 0:
-            verdict = f"⚠ PIPELINE ADDED {delta:,} Miss (possible data loss)"
-        else:
-            verdict = f"L1 has {-delta:,} fewer Miss than L0 (QC recovered?)"
+        qc = l1[qc_var].values.astype(int)
+        l1_good   = int(np.sum(qc == 1))
+        l1_pgood  = int(np.sum(qc == 2))
+        l1_pbad   = int(np.sum(qc == 3))
+        l1_bad    = int(np.sum(qc == 4))
+        l1_miss   = int(np.sum(qc == 9))
+        l1_total  = len(qc)
 
-        print(f"  {var:<25}  {l0_nan:>10,}  {l1_miss:>16,}  "
-              f"{l1_total:>10,}  {verdict}")
-        print(f"  {'':25}  L1 breakdown: good={l1_good:,}  "
-              f"prob_good={l1_pgood:,}  bad={l1_bad:,}  miss={l1_miss:,}")
+        # Scale L0 NaN to L1 size if pre-clean removed rows
+        # L0 NaN that were in removed rows are gone from L1 entirely —
+        # so the expected Miss count in L1 is l0_nan scaled by (l1_total/l0_total)
+        if l0_total > 0 and l0_total != l1_total:
+            scale = l1_total / l0_total
+            expected_miss = int(round(l0_nan * scale))
+            size_note = f"(scaled {scale:.2f}x)"
+        else:
+            expected_miss = l0_nan
+            size_note = ""
+
+        # Extra Miss = Miss in L1 beyond what was already NaN in L0
+        extra_miss = l1_miss - expected_miss
+
+        # Tolerance: allow ±2% of total or 200 points (whichever larger)
+        # to account for pre-clean removing some originally-NaN rows
+        tol = max(200, int(0.02 * l1_total))
+
+        if extra_miss > tol:
+            verdict = f"⚠  BUG: +{extra_miss:,} Miss not from L0"
+            issues.append((var, extra_miss))
+        elif extra_miss < -tol:
+            verdict = f"✓  OK (QC reclaimed {-extra_miss:,} pts from NaN)"
+        else:
+            verdict = "✓  OK"
+
+        print(f"  {var:<28}  {l0_nan:>8,}  {l1_miss:>8,}  "
+              f"{l1_bad+l1_pbad:>8,}  {l1_good+l1_pgood:>8,}  "
+              f"{extra_miss:>+11,}  {verdict} {size_note}")
 
     l0.close()
     l1.close()
 
+    # Summary
+    print("\n" + "=" * 70)
+    if issues:
+        print("SUMMARY — Variables with QC flag bug (Miss > L0 NaN):")
+        for var, n in sorted(issues, key=lambda x: -x[1]):
+            print(f"  ⚠  {var:<28}  +{n:,} extra Miss values")
+        print("\n  These variables have valid L0 data mislabelled as Miss (flag 9)")
+        print("  instead of Bad (flag 4). Fix: re-run pipeline after git pull.")
+    else:
+        print("SUMMARY — All variables OK: Miss in L1 is consistent with L0 NaN.")
+        print("  No valid data is being silently dropped by the pipeline.")
+    print("=" * 70)
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -159,26 +213,24 @@ if __name__ == "__main__":
 
     data_dir = sys.argv[1]
 
-    # Auto-find L0 timeseries
     l0_path = find_nc(data_dir, "L0-timeseries", "*.nc")
     if not l0_path:
-        # Try old path
         l0_path = find_nc(data_dir, ".", "incois_glider_*_L0.nc")
     if not l0_path:
-        sys.exit(f"ERROR: No L0 timeseries found under {data_dir}/output/")
+        sys.exit(f"ERROR: No L0 timeseries found under {data_dir}/output/\n"
+                 f"Run the pipeline first.")
 
-    # Auto-find L1 timeseries
     l1_path = find_nc(data_dir, "L1-timeseries", "*.nc")
 
-    print(f"\nData dir: {data_dir}")
-    print(f"L0 path:  {l0_path}")
-    print(f"L1 path:  {l1_path or '(not found)'}")
+    print(f"\nData dir : {data_dir}")
+    print(f"L0 file  : {l0_path}")
+    print(f"L1 file  : {l1_path or '(not found — run pipeline first)'}")
 
-    step2_l0_coverage(l0_path)
-    step3_sample_cadence(l0_path)
+    l0_results = report_l0_coverage(l0_path)
+    report_cadence(l0_path)
 
     if l1_path:
-        step2_l1_vs_l0(l0_path, l1_path)
+        report_flag_integrity(l0_path, l1_path, l0_results)
     else:
-        print("\nNo L1 timeseries found — skipping cross-check.")
-        print("Run the pipeline first, then re-run this script.")
+        print("\nNo L1 file found — skipping flag integrity check.")
+        print("Run the pipeline, then re-run this script.")

@@ -1237,7 +1237,17 @@ def pressure_cascade(ds, qc_dict):
     return n_casc
 
 
-def apply_argo_qc(ds, config_pressure_dbar=1000.0):
+def apply_argo_qc(ds, config_pressure_dbar=1000.0, l0_nan_mask=None):
+    """
+    Apply ARGO QC flags.
+
+    l0_nan_mask : dict {var: boolean array} of NaN positions in the original
+                  L0 data, captured BEFORE physics QC ran. Used to distinguish
+                  "originally missing" (flag 9) from "nulled by QC tests"
+                  (flag 4). If None, falls back to current NaN positions
+                  (legacy behaviour — may incorrectly flag QC-nulled values
+                  as Miss instead of Bad).
+    """
     print("  Applying ARGO QC Flags (Manual v3.9)...")
     vars_to_qc = [
         "temperature", "salinity", "pressure", "oxygen_concentration",
@@ -1247,10 +1257,24 @@ def apply_argo_qc(ds, config_pressure_dbar=1000.0):
     qc_dict = {}
     n = len(ds.time)
     for var in vars_to_qc:
-        if var in ds:
-            qc = np.ones(n, dtype=np.int8)
-            qc[np.isnan(ds[var].values)] = 9
-            qc_dict[var] = qc
+        if var not in ds:
+            continue
+        qc = np.ones(n, dtype=np.int8)
+
+        current_nan = np.isnan(ds[var].values)
+
+        if l0_nan_mask is not None and var in l0_nan_mask:
+            # Points that were NaN in the original L0 → truly missing (flag 9)
+            orig_missing = l0_nan_mask[var]
+            # Points that are NaN now but were NOT NaN in L0 → nulled by QC → flag 4
+            qc_nulled = current_nan & ~orig_missing
+            qc[orig_missing] = 9
+            qc[qc_nulled]    = 4
+        else:
+            # Fallback: treat all current NaNs as missing
+            qc[current_nan] = 9
+
+        qc_dict[var] = qc
 
     n2 = test_impossible_date(ds, qc_dict)
     if n2 > 0:
@@ -1336,10 +1360,22 @@ def run_step23(l0_path=None):
 
     ds = pre_clean(ds)
     ds = detect_variable_corruption(ds)
+
+    # Snapshot which positions are NaN RIGHT NOW — after pre-clean (time-crop,
+    # depth-segmentation) but before physics QC NaN-nulls any values.
+    # This is the ground truth for "originally missing" vs "removed by QC".
+    l0_nan_mask = {}
+    for var in ["temperature", "salinity", "pressure", "oxygen_concentration",
+                "chlorophyll", "cdom", "backscatter_700", "density",
+                "latitude", "longitude"]:
+        if var in ds:
+            l0_nan_mask[var] = np.isnan(ds[var].values).copy()
+
     ds = apply_optics_correction(ds)
     ds = apply_physics_qc(ds)
     ds = oxygen_lag_correction(ds)
-    ds = apply_argo_qc(ds, config_pressure_dbar=MAX_DEPTH_DBAR)
+    ds = apply_argo_qc(ds, config_pressure_dbar=MAX_DEPTH_DBAR,
+                       l0_nan_mask=l0_nan_mask)
 
     ds.attrs["processing_level"] = "L1 - GliderTools QC + ARGO RTQC flags applied"
     ds.attrs["history"] = f"L1 processed on {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} using pipeline/step23.py"
