@@ -221,8 +221,10 @@ def plot_ts_diagram(l1_path, plot_path=None):
 
     ds = xr.open_dataset(l1_path)
 
-    temp = (ds["potential_temperature"].values if "potential_temperature" in ds
-            else ds["temperature"].values if "temperature" in ds else None)
+    temp = (ds["temperature"].values        if "temperature"         in ds
+            else ds["potential_temperature"].values if "potential_temperature" in ds else None)
+    temp_qc_var = ("temperature_QC"        if "temperature_QC"         in ds
+                   else "potential_temperature_QC" if "potential_temperature_QC" in ds else None)
     sal  = ds["salinity"].values     if "salinity"    in ds else None
     dep  = ds["depth"].values        if "depth"       in ds else None
 
@@ -232,7 +234,7 @@ def plot_ts_diagram(l1_path, plot_path=None):
         return None
 
     # Only use QC-good points
-    tqc = ds["temperature_QC"].values.astype(int) if "temperature_QC" in ds else None
+    tqc = ds[temp_qc_var].values.astype(int) if temp_qc_var and temp_qc_var in ds else None
     sqc = ds["salinity_QC"].values.astype(int)    if "salinity_QC"    in ds else None
     valid = np.isfinite(temp) & np.isfinite(sal)
     if tqc is not None:
@@ -297,7 +299,7 @@ def plot_ts_diagram(l1_path, plot_path=None):
             pass
 
     ax.set_xlabel("Salinity (PSU)", fontsize=12)
-    ax.set_ylabel("Potential Temperature (°C)", fontsize=12)
+    ax.set_ylabel("Temperature (°C)", fontsize=12)
     ax.set_title(f"Glider {GLIDER_ID}  —  T-S Diagram  "
                  f"({n_valid:,} QC-good points)",
                  fontsize=12, fontweight="bold")
