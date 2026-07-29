@@ -965,15 +965,17 @@ def plot_individual_variables(l0_path, l1_path=None):
                 grid_data_raw, t_arr, depth_vals = _make_l1_grid_from_ts(ds)
             else:
                 grid_data_raw, t_arr, depth_vals = _make_l0_grid(ds)
-            ds.close()
             if grid_data_raw is None:
+                ds.close()
                 continue
-            # Remap by var_name key
+            # Remap by var_name key — resolve against the already-open ds,
+            # not a second open() call
             grid_data = {}
             for var_name, _, _, _, _ in var_configs:
-                actual = _resolve_var(xr.open_dataset(ts_path), var_name) or var_name
+                actual = _resolve_var(ds, var_name) or var_name
                 if actual in grid_data_raw:
                     grid_data[var_name] = grid_data_raw[actual]
+            ds.close()
 
         if t_arr is None or len(t_arr) < 2:
             continue
