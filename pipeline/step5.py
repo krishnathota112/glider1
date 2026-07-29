@@ -911,127 +911,153 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
 
 def plot_individual_variables(l0_path, l1_path=None):
     """
-    Generate individual single-variable gridplots, one PNG per variable,
-    in pyglider style (per-profile columns, auto-depth per variable).
+    Generate individual single-variable section plots, one PNG per variable.
+
+    Uses uniform TIME-BIN gridding (same as the overview section) so the
+    plots render as dense filled panels rather than sparse per-profile columns.
+    The existing L0/L1 grid NetCDFs are used when available; otherwise the
+    grid is built on the fly from the timeseries.
     """
     plots_dir = os.path.join(OUTPUT_DIR, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
     var_configs = [
-        ("temperature", "temperature", "RdYlBu_r", "Celsius", None),
-        ("salinity", "salinity", "viridis", "PSU", None),
-        ("oxygen_concentration", "oxygen", "viridis", "umol/L", None),
-        ("chlorophyll", "chlorophyll", "YlGn", "mg m-3", 200),
-        ("cdom", "CDOM", "BuPu", "ppb", 200),
-        ("backscatter_700", "backscatter_700", "inferno", "m-1", 200),
+        # (var_name,          label,            cmap,        units,    max_depth_override)
+        ("temperature",       "temperature",    "RdYlBu_r",  "°C",     None),
+        ("salinity",          "salinity",       "viridis",   "PSU",    None),
+        ("oxygen_concentration", "oxygen",      "viridis",   "µmol/L", None),
+        ("chlorophyll",       "chlorophyll",    "YlGn",      "mg m⁻³", 200),
+        ("cdom",              "CDOM",           "BuPu",      "ppb",    200),
+        ("backscatter_700",   "backscatter_700","inferno",   "m⁻¹",    200),
     ]
 
-    for source, label_prefix in [(l0_path, "L0"), (l1_path, "L1")]:
-        if source is None or not os.path.exists(source):
-            continue
-        ds = xr.open_dataset(source)
-        if "profile_index" not in ds or "depth" not in ds:
+    # Paths to pre-built grid files
+    l0_grid_path = os.path.join(OUTPUT_DIR, "L0-gridfiles",
+                                f"incois_glider_{GLIDER_ID}_L0_grid.nc")
+    l1_grid_path = os.path.join(OUTPUT_DIR, "L1-gridfiles",
+                                f"incois_glider_{GLIDER_ID}_L1_grid.nc")
+
+    sources = []
+    if l0_path and os.path.exists(l0_path):
+        g = l0_grid_path if os.path.exists(l0_grid_path) else None
+        sources.append(("L0", l0_path, g, False))
+    if l1_path and os.path.exists(l1_path):
+        g = l1_grid_path if os.path.exists(l1_grid_path) else None
+        sources.append(("L1", l1_path, g, True))
+
+    for label_prefix, ts_path, grid_path, apply_qc in sources:
+
+        # ── Build or load the time-bin grid ──────────────────────────────
+        if grid_path and os.path.exists(grid_path):
+            gds = xr.open_dataset(grid_path)
+            t_arr      = gds.time.values
+            depth_vals = gds.depth.values
+            grid_data  = {}
+            for var_name, _, _, _, _ in var_configs:
+                actual = _resolve_var(gds, var_name)
+                if actual and actual in gds:
+                    grid_data[var_name] = gds[actual].values  # (time, depth)
+            gds.close()
+        else:
+            # Fall back: build from timeseries using uniform time bins
+            ds = xr.open_dataset(ts_path)
+            if apply_qc:
+                grid_data_raw, t_arr, depth_vals = _make_l1_grid_from_ts(ds)
+            else:
+                grid_data_raw, t_arr, depth_vals = _make_l0_grid(ds)
             ds.close()
+            if grid_data_raw is None:
+                continue
+            # Remap by var_name key
+            grid_data = {}
+            for var_name, _, _, _, _ in var_configs:
+                actual = _resolve_var(xr.open_dataset(ts_path), var_name) or var_name
+                if actual in grid_data_raw:
+                    grid_data[var_name] = grid_data_raw[actual]
+
+        if t_arr is None or len(t_arr) < 2:
             continue
 
-        pi = ds["profile_index"].values
-        depth_all = ds["depth"].values
-        time_all = ds["time"].values
-        unique_profiles = np.unique(pi[np.isfinite(pi)])
-
-        p_times = []
-        for p in unique_profiles:
-            mask = pi == p
-            t_sec = time_all[mask].astype("datetime64[s]").astype(float)
-            p_times.append(float(np.nanmean(t_sec)))
-        p_times = np.array(p_times).astype("datetime64[s]")
-
+        # ── One plot per variable ─────────────────────────────────────────
         for var_name, var_label, cmap, units, max_depth_override in var_configs:
-            actual_var = None
-            for _, candidates, _ in PLOT_SLOTS:
-                if var_name in candidates:
-                    for c in candidates:
-                        if c in ds:
-                            actual_var = c
-                            break
-                    break
-            if actual_var is None:
-                if var_name in ds:
-                    actual_var = var_name
-                else:
-                    continue
-
-            v_all = ds[actual_var].values
-            if np.sum(np.isfinite(v_all)) < 10:
+            if var_name not in grid_data:
                 continue
 
+            V = grid_data[var_name].copy()          # (n_time, n_depth)
+            if V.ndim != 2:
+                continue
+
+            # Physical range guard — same table used in _draw_pcolormesh
+            V, n_phys = _apply_phys_range(V, var_name)
+            if n_phys > 0:
+                print(f"    {var_name}: nulled {n_phys} physically-impossible values")
+
+            # Determine plot depth
             if max_depth_override is not None:
                 max_d = float(max_depth_override)
             else:
-                valid_depths = depth_all[np.isfinite(v_all) & np.isfinite(depth_all)]
-                max_d = float(np.percentile(valid_depths, 99.5)) if len(valid_depths) > 0 else 1000.0
+                col_counts = np.sum(np.isfinite(V), axis=0).astype(float)
+                n_t = V.shape[0]
+                bins_ok = np.where(col_counts >= max(n_t * 0.05, 2))[0]
+                max_d = float(depth_vals[bins_ok[-1]]) if len(bins_ok) > 0 \
+                        else float(depth_vals[-1])
+                max_d = min(max_d * 1.05, float(depth_vals[-1]))
 
-            depth_bin = DEPTH_BIN
-            depth_centers = np.arange(depth_bin / 2, max_d + depth_bin / 2, depth_bin)
-            n_depth = len(depth_centers)
-            d_edges = np.arange(0, max_d + depth_bin, depth_bin)
+            depth_mask = depth_vals <= max_d
+            V_trim   = V[:, depth_mask]
+            d_trim   = depth_vals[depth_mask]
 
-            grid = np.full((len(unique_profiles), n_depth), np.nan)
-            for i, p in enumerate(unique_profiles):
-                mask = pi == p
-                d_p = depth_all[mask].copy()
-                v_p = v_all[mask].copy()
+            # Suppress depth bins with < 5% coverage (artefacts)
+            col_cov = np.sum(np.isfinite(V_trim), axis=0).astype(float)
+            V_trim[:, col_cov < max(V_trim.shape[0] * 0.05, 2)] = np.nan
 
-                if label_prefix == "L1":
-                    qc_var = f"{actual_var}_QC"
-                    if qc_var in ds:
-                        qc = ds[qc_var].values[mask].astype(float)
-                        v_p[~((qc == 1) | (qc == 2))] = np.nan
+            V_trim = _mask_time_gaps(V_trim, t_arr, GAP_THRESHOLD_HOURS)
 
-                valid = np.isfinite(d_p) & np.isfinite(v_p) & (d_p <= max_d)
-                if np.sum(valid) < 2:
-                    continue
-                d_idx = np.clip(np.digitize(d_p[valid], d_edges) - 1, 0, n_depth - 1)
-                for di in range(n_depth):
-                    in_bin = d_idx == di
-                    if np.any(in_bin):
-                        grid[i, di] = np.nanmean(v_p[valid][in_bin])
-
-            finite_grid = grid[np.isfinite(grid)]
-            if len(finite_grid) == 0:
+            finite = np.isfinite(V_trim)
+            if np.sum(finite) < 10:
+                print(f"  SKIP {label_prefix} {var_name}: no finite data after masking")
                 continue
 
-            fig, ax = plt.subplots(1, 1, figsize=(14, 5))
-            vmin = float(np.nanmin(finite_grid))
-            vmax = float(np.nanmax(finite_grid))
+            # Robust colorscale — 2/98 percentile after physical clamp
+            v_min = float(np.nanpercentile(V_trim[finite], 2))
+            v_max = float(np.nanpercentile(V_trim[finite], 98))
+            if v_min >= v_max:
+                v_max = v_min + 1.0
 
-            t_edges = _pcolormesh_edges(p_times)
-            d_edges_plot = _pcolormesh_edges(depth_centers)
+            fig, ax = plt.subplots(1, 1, figsize=(14, 5))
+
+            t_edges = _pcolormesh_edges(t_arr)
+            d_edges = _pcolormesh_edges(d_trim)
             cmap_obj = plt.get_cmap(cmap).copy()
             cmap_obj.set_bad(color="white")
             cmap_obj.set_under(color="white")
             cmap_obj.set_over(color="white")
-            mesh = ax.pcolormesh(
-                t_edges, d_edges_plot, grid.T,
-                cmap=cmap_obj, vmin=vmin, vmax=vmax, shading="flat")
+
+            mesh = ax.pcolormesh(t_edges, d_edges, V_trim.T,
+                                 cmap=cmap_obj, vmin=v_min, vmax=v_max,
+                                 shading="flat")
+
             ax.set_ylim(max_d, 0)
             ax.set_ylabel("Depth [m]", fontsize=12)
-            ax.set_xlabel("Time", fontsize=12)
+            ax.set_xlabel("", fontsize=12)
             ax.xaxis.set_major_formatter(mdates.DateFormatter("%b\n%Y"))
-            ax.xaxis.set_major_locator(mdates.MonthLocator())
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+
             cbar = plt.colorbar(mesh, ax=ax, pad=0.02)
             cbar.set_label(f"{var_label} [{units}]", fontsize=11)
-            title = f"Glider {GLIDER_ID} -- {label_prefix} {var_label}"
-            if label_prefix == "L1":
-                title += " (QC good only)"
-            ax.set_title(title, fontsize=13, fontweight="bold")
+
+            qc_note = " (QC good only)" if apply_qc else " (all values)"
+            ax.set_title(
+                f"Glider {GLIDER_ID}  —  {label_prefix} {var_label}{qc_note}",
+                fontsize=13, fontweight="bold")
+
             plt.tight_layout()
             fname = f"incois_glider_{GLIDER_ID}_{label_prefix}_{var_name}.png"
-            plt.savefig(os.path.join(plots_dir, fname), dpi=150, bbox_inches="tight")
+            fpath = os.path.join(plots_dir, fname)
+            plt.savefig(fpath, dpi=150, bbox_inches="tight")
             plt.close(fig)
             print(f"  Saved: {fname}")
 
-        ds.close()
     print("  Individual variable plots done.")
 
 # ----------------------------------------------------------------

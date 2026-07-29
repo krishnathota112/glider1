@@ -568,6 +568,55 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
                       f"({dt_h[gi]:.0f} h / {dt_h[gi]/24:.1f} days)")
         ds1.close()
 
+    # ---- Sensor failure detection ----
+    if l0_path and os.path.exists(l0_path):
+        ds0 = xr.open_dataset(l0_path)
+        t_all = ds0.time.values
+        deployment_span = float((t_all[-1] - t_all[0]) / np.timedelta64(1, 'D'))
+        sensor_issues = []
+
+        for var in ["oxygen_concentration", "chlorophyll", "cdom",
+                    "backscatter_700", "temperature", "salinity"]:
+            if var not in ds0:
+                continue
+            v = ds0[var].values
+            valid = np.isfinite(v)
+            if np.sum(valid) < 10:
+                continue
+            t_valid = t_all[valid]
+            last_valid = t_valid[-1]
+            first_valid = t_valid[0]
+
+            # Check if sensor stopped early (last valid > 10% before end)
+            days_from_end = float((t_all[-1] - last_valid) / np.timedelta64(1, 'D'))
+            days_from_start = float((first_valid - t_all[0]) / np.timedelta64(1, 'D'))
+
+            if days_from_end > max(deployment_span * 0.10, 3):
+                sensor_issues.append(
+                    f"  ⚠  {var:22s}: last valid reading {str(last_valid)[:19]} "
+                    f"({days_from_end:.0f} days before end of deployment) "
+                    f"— possible sensor failure or removal")
+
+            # Check for large negative block (like 1128 oxygen)
+            if var == "oxygen_concentration":
+                neg = valid & (v < -5)
+                if np.sum(neg) > 100:
+                    neg_days = np.unique(
+                        t_all[neg].astype("datetime64[D]"))
+                    sensor_issues.append(
+                        f"  ⚠  {var:22s}: {np.sum(neg):,} physically-impossible "
+                        f"negative values ({str(t_all[neg][0])[:10]} → "
+                        f"{str(t_all[neg][-1])[:10]}, {len(neg_days)} days) "
+                        f"— likely optode fouling/failure")
+
+        if sensor_issues:
+            w()
+            w("  SENSOR ISSUES DETECTED")
+            w("  " + "-" * 50)
+            for msg in sensor_issues:
+                w(msg)
+        ds0.close()
+
     w()
     w("=" * 70)
     w(f"  Pipeline outputs in: {OUTPUT_DIR}")
