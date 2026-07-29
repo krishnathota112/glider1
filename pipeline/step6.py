@@ -666,8 +666,69 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
             w()
             w("  SENSOR ISSUES DETECTED")
             w("  " + "-" * 50)
+
+            # Check if multiple variables share the same "last valid" timestamp
+            # within a few seconds — that's a data gap / mission interruption,
+            # not independent sensor failures.
+            from collections import defaultdict
+            last_valid_by_var = {}
             for msg in sensor_issues:
-                w(msg)
+                # Extract variable name (first token after ⚠)
+                parts = msg.strip().split()
+                if len(parts) > 1:
+                    vname = parts[1].rstrip(':')
+                    # Extract timestamp from message
+                    for chunk in parts:
+                        if 'T' in chunk and ':' in chunk and len(chunk) >= 16:
+                            try:
+                                ts = np.datetime64(chunk[:19])
+                                last_valid_by_var[vname] = ts
+                            except Exception:
+                                pass
+
+            # Group variables whose last-valid timestamps are within 60 seconds
+            # of each other — those share a common stop event (mission gap),
+            # not independent sensor failures.
+            groups = []   # list of (timestamp_str, [var_names])
+            assigned = set()
+            var_list = list(last_valid_by_var.items())
+            for i, (v1, t1) in enumerate(var_list):
+                if v1 in assigned:
+                    continue
+                group = [v1]
+                assigned.add(v1)
+                for j, (v2, t2) in enumerate(var_list):
+                    if v2 in assigned or i == j:
+                        continue
+                    delta_s = abs(float((t1 - t2) / np.timedelta64(1, 's')))
+                    if delta_s <= 60:
+                        group.append(v2)
+                        assigned.add(v2)
+                if len(group) > 1:
+                    groups.append((str(t1)[:19], group))
+
+            reported_vars = set()
+            if groups:
+                for ts_str, vars_in_group in groups:
+                    core = [v for v in vars_in_group
+                            if v in ('temperature', 'salinity', 'pressure')]
+                    all_vars_str = ', '.join(vars_in_group)
+                    if core:
+                        w(f"  ⚠  DATA GAP / MISSION INTERRUPTION at {ts_str}")
+                        w(f"     Variables: [{all_vars_str}]")
+                        w(f"     All stopped simultaneously — single shared event")
+                        w(f"     (glider went silent), not {len(vars_in_group)} independent failures.")
+                    else:
+                        w(f"  ⚠  Multiple sensors stopped simultaneously at {ts_str}:")
+                        w(f"     [{all_vars_str}] — check for multi-sensor failure or recovery")
+                    reported_vars.update(vars_in_group)
+
+            # Print remaining individual sensor issues (not part of a group)
+            for msg in sensor_issues:
+                parts = msg.strip().split()
+                vname = parts[1].rstrip(':') if len(parts) > 1 else ""
+                if vname not in reported_vars:
+                    w(msg)
         else:
             w()
             w("  SENSOR CHECK: no mid-deployment failures detected")

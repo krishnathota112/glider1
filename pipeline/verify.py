@@ -18,7 +18,119 @@ import xarray as xr
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def check_gps(ds):
+def check_new_dataset(ds, label="L0"):
+    """
+    Pre-flight checks for a new dataset — catches common failure modes
+    that would cause silent bugs downstream.
+
+    Run this against the L0 file before QC so issues are caught early.
+    """
+    print("\n" + "=" * 70)
+    print(f"  0. NEW-DATASET INTEGRITY CHECKS ({label})")
+    print("=" * 70)
+
+    issues = []
+    n = len(ds.time)
+
+    # 1. Optics corruption check — values identical to pressure
+    if "pressure" in ds:
+        pres = ds["pressure"].values.astype(float)
+        for var in ["chlorophyll", "cdom", "backscatter_700"]:
+            if var not in ds:
+                continue
+            v = ds[var].values.astype(float)
+            both = np.isfinite(v) & np.isfinite(pres)
+            if np.sum(both) < 100:
+                continue
+            v_v, p_v = v[both], pres[both]
+            frac_id = float(np.mean(np.abs(v_v - p_v) < 1e-3))
+            if frac_id > 0.5:
+                issues.append(
+                    f"CRITICAL: '{var}' values are IDENTICAL to pressure "
+                    f"(frac_identical={frac_id:.3f}) — data mapping bug in L0 decode. "
+                    f"Optics data is unrecoverable for this deployment.")
+                print(f"  ⚠  CORRUPTED: {var} = pressure (frac_identical={frac_id:.3f})")
+            else:
+                corr = float(np.corrcoef(v_v, p_v)[0,1])
+                v_range = f"[{v_v.min():.3f},{v_v.max():.3f}]"
+                print(f"  OK: {var} range={v_range}, corr_with_pres={corr:.4f} — real data")
+
+    # 2. Simultaneous data stop — detect mission gaps vs sensor failures
+    t_all = ds.time.values
+    last_valid_times = {}
+    for var in ["temperature", "salinity", "pressure",
+                "oxygen_concentration", "chlorophyll", "cdom", "backscatter_700"]:
+        if var not in ds:
+            continue
+        v = ds[var].values
+        valid = np.isfinite(v)
+        if np.sum(valid) < 10:
+            continue
+        last_valid_times[var] = ds.time.values[valid][-1]
+
+    if last_valid_times:
+        mission_end = t_all[-1]
+        # Find variables that stopped more than 10% before end
+        stopped_early = {
+            var: ts for var, ts in last_valid_times.items()
+            if float((mission_end - ts) / np.timedelta64(1, 'D')) > max(
+                float((mission_end - t_all[0]) / np.timedelta64(1, 'D')) * 0.10, 3)
+        }
+
+        if stopped_early:
+            # Check if they all stopped at the same time (within 60s) — mission gap
+            timestamps = list(stopped_early.values())
+            max_spread_s = float(max(
+                abs(float((t - timestamps[0]) / np.timedelta64(1, 's')))
+                for t in timestamps))
+
+            core_ctd = [v for v in stopped_early if v in ('temperature', 'salinity')]
+
+            if max_spread_s <= 60 and len(stopped_early) >= 4:
+                stop_ts = str(timestamps[0])[:19]
+                days_early = float((mission_end - timestamps[0]) / np.timedelta64(1, 'D'))
+                vars_str = ', '.join(stopped_early.keys())
+                print(f"\n  ⚠  MISSION GAP / ALL-SENSOR STOP at {stop_ts}")
+                print(f"     Variables: [{vars_str}]")
+                print(f"     {days_early:.0f} days before L0 end — "
+                      f"likely glider recovery/gap, not sensor failure")
+                issues.append(
+                    f"NOTE: All sensors stopped simultaneously at {stop_ts} "
+                    f"({days_early:.0f} days before L0 end) — "
+                    f"mission gap or recovery, not individual sensor failures.")
+            elif core_ctd:
+                for var, ts in stopped_early.items():
+                    days = float((mission_end - ts) / np.timedelta64(1, 'D'))
+                    print(f"  ⚠  {var}: stopped {days:.0f} days before end at {str(ts)[:19]}")
+                    issues.append(
+                        f"WARNING: {var} stopped {days:.0f} days before end "
+                        f"at {str(ts)[:19]}")
+
+    # 3. Optics sub-sampling rate
+    if "temperature" in ds:
+        t = ds.time.values
+        temp = ds["temperature"].values
+        temp_gaps = np.diff(t[np.isfinite(temp)]).astype("timedelta64[s]").astype(float)
+        ctd_median = float(np.median(temp_gaps[temp_gaps > 0])) if len(temp_gaps) > 0 else 1.0
+        print(f"\n  CTD sample interval: {ctd_median:.1f} s")
+
+        for var in ["chlorophyll", "oxygen_concentration"]:
+            if var not in ds:
+                continue
+            v = ds[var].values
+            valid_t = t[np.isfinite(v)]
+            if len(valid_t) < 2:
+                continue
+            gaps = np.diff(valid_t).astype("timedelta64[s]").astype(float)
+            gaps = gaps[gaps > 0]
+            med = float(np.median(gaps))
+            ratio = med / max(ctd_median, 1.0)
+            print(f"  {var}: {med:.1f} s sample interval ({ratio:.1f}x CTD) — "
+                  f"{'sub-sampled (normal)' if ratio > 2 else 'full rate'}")
+
+    if not issues:
+        print("\n  All integrity checks passed.")
+    return issues
     """1. GPS / MAP diagnostics."""
     print("\n" + "=" * 70)
     print("  1. GPS / TRACK DIAGNOSTICS")
@@ -341,6 +453,7 @@ def main():
     print(f"  Time range: {t0} -> {t1}")
 
     all_issues = []
+    all_issues.extend(check_new_dataset(ds, label="L1"))
     all_issues.extend(check_gps(ds))
     all_issues.extend(check_ts(ds))
     all_issues.extend(check_qc(ds))

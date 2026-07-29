@@ -239,46 +239,69 @@ def _strip_shallow_test_dives(ds):
 
 def detect_variable_corruption(ds):
     """
-    Detect and null-out variables that are identical to (or perfectly correlated
-    with) a different physical variable — a sign of a data mapping bug in the L0.
+    Detect and null-out variables that are LITERALLY IDENTICAL to pressure
+    — a sign of a data mapping bug in the L0 (wrong sensor mapped to wrong
+    variable name).
 
-    Rules:
-    - Compare each optics variable against pressure and oxygen.
-    - Only flag as corrupted if values are IDENTICAL (same data, same range)
-      AND the ranges are physically implausible for that variable.
-    - Do NOT null chlorophyll/cdom just because they happen to correlate with
-      oxygen after global range filtering.
+    Detection rule: values must be near-identical in both NUMERIC VALUE and
+    SCALE, not just correlated. High Pearson correlation alone is NOT
+    sufficient — depth-varying ocean variables (chlorophyll, CDOM, backscatter)
+    naturally correlate with pressure because they all track depth. We require:
+
+      1. Near-identical numeric values: >50% of points within 1e-3 of pressure
+         (absolute), OR median |chl - pres| < 1.0 (scale match)
+      2. Variable's own physical range is pressure-like (span > 50 dbar)
+
+    This catches the genuine bug pattern (chlorophyll array contains pressure
+    values) while leaving real optical data alone even if it correlates with
+    depth.
     """
-    # Physical plausibility ranges for optics after QC
-    # If a variable's values fall outside these, it's likely corrupted
-    optics_ranges = {
-        "chlorophyll":     (-1.0,  200.0),   # mg m-3
-        "cdom":            (-1.0,  500.0),   # ppb
-        "backscatter_700": (-0.1,   0.5),    # m-1
-    }
+    if "pressure" not in ds:
+        return ds
 
-    # Check optics against pressure — if corr > 0.9999 AND values span
-    # pressure-like range (tens to thousands of dbar), null it
-    if "pressure" in ds:
-        pres = ds["pressure"].values.astype(float)
-        for var in ["chlorophyll", "cdom", "backscatter_700"]:
-            if var not in ds:
-                continue
-            v = ds[var].values.astype(float)
-            both = np.isfinite(v) & np.isfinite(pres)
-            if np.sum(both) < 100:
-                continue
-            corr = float(np.corrcoef(v[both], pres[both])[0, 1])
-            if abs(corr) > 0.9999:
-                # Also check if the range is pressure-like (> 50 dbar span)
-                v_range = float(np.nanmax(v[both]) - np.nanmin(v[both]))
-                if v_range > 50.0:
-                    print(f"  WARNING: '{var}' is identical to 'pressure' "
-                          f"(corr={corr:.6f}, range={v_range:.1f}) "
-                          f"— nulling (data mapping bug in L0)")
-                    nulled = ds[var].values.copy()
-                    nulled[:] = np.nan
-                    ds[var].values = nulled
+    pres = ds["pressure"].values.astype(float)
+
+    for var in ["chlorophyll", "cdom", "backscatter_700"]:
+        if var not in ds:
+            continue
+        v = ds[var].values.astype(float)
+        both = np.isfinite(v) & np.isfinite(pres)
+        if np.sum(both) < 100:
+            continue
+
+        v_valid   = v[both]
+        p_valid   = pres[both]
+        v_range   = float(np.nanmax(v_valid) - np.nanmin(v_valid))
+        v_min     = float(np.nanmin(v_valid))
+        v_max     = float(np.nanmax(v_valid))
+        p_range   = float(np.nanmax(p_valid) - np.nanmin(p_valid))
+
+        # Test 1: are the numeric values actually the same as pressure?
+        # "Same" means >50% of points are within 1e-3 of pressure value
+        frac_identical = float(np.mean(np.abs(v_valid - p_valid) < 1e-3))
+
+        # Test 2: does the variable's value range overlap pressure's range?
+        # Real chlorophyll is 0–50 mg/m³, real pressure is 0–2000 dbar —
+        # they won't overlap in value even if they correlate structurally
+        range_overlap = (v_max > 10.0) and (v_min >= -2.0) and (v_range > 50.0)
+
+        is_corrupted = (frac_identical > 0.50) or (frac_identical > 0.10 and range_overlap)
+
+        if is_corrupted:
+            print(f"  WARNING: '{var}' values are NUMERICALLY IDENTICAL to 'pressure' "
+                  f"(frac_identical={frac_identical:.3f}, "
+                  f"{var} range=[{v_min:.2f},{v_max:.2f}], "
+                  f"pressure range=[{np.nanmin(p_valid):.1f},{np.nanmax(p_valid):.1f}]) "
+                  f"— nulling (data mapping bug in L0)")
+            nulled = ds[var].values.copy()
+            nulled[:] = np.nan
+            ds[var].values = nulled
+        else:
+            # Log what we found so the user can see the test passed cleanly
+            corr = float(np.corrcoef(v_valid, p_valid)[0, 1])
+            print(f"  Corruption check '{var}': range=[{v_min:.4f},{v_max:.4f}], "
+                  f"corr_with_pressure={corr:.4f}, frac_identical={frac_identical:.6f} "
+                  f"— OK (real data)")
 
     return ds
 
