@@ -575,8 +575,23 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
         ds0 = xr.open_dataset(l0_path)
         t_all = ds0.time.values
         n_total = len(t_all)
-        deployment_span_days = float(
-            (t_all[-1] - t_all[0]) / np.timedelta64(1, 'D'))
+
+        # Use L1 end time as the reference "mission end" when available.
+        # L0 may span pre-deployment + post-recovery; L1 is cropped to the
+        # actual deployment window. Comparing against L0 end causes false
+        # positives when the time-crop cuts the series short.
+        if l1_path and os.path.exists(l1_path):
+            ds1_ref = xr.open_dataset(l1_path)
+            mission_end   = ds1_ref.time.values[-1]
+            mission_start = ds1_ref.time.values[0]
+            ds1_ref.close()
+        else:
+            mission_end   = t_all[-1]
+            mission_start = t_all[0]
+
+        mission_span_days = float(
+            (mission_end - mission_start) / np.timedelta64(1, 'D'))
+
         sensor_issues = []
 
         for var in ["oxygen_concentration", "chlorophyll", "cdom",
@@ -587,51 +602,52 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
             valid = np.isfinite(v)
             n_valid = int(np.sum(valid))
 
-            # Never-installed: <0.5% coverage throughout — skip entirely,
+            # Never-installed: <0.5% coverage throughout — skip,
             # not a failure, just no sensor on this deployment
             if n_valid < max(n_total * 0.005, 5):
                 continue
 
-            t_valid = t_all[valid]
-            last_valid  = t_valid[-1]
-            first_valid = t_valid[0]
+            # Only consider points within the mission window
+            in_mission = (t_all >= mission_start) & (t_all <= mission_end)
+            valid_in_mission = valid & in_mission
+            if np.sum(valid_in_mission) < 5:
+                continue
 
-            # Days between last valid reading and deployment end
-            days_from_end   = float((t_all[-1]  - last_valid)  / np.timedelta64(1, 'D'))
-            # Days between deployment start and first valid reading
-            days_from_start = float((first_valid - t_all[0])   / np.timedelta64(1, 'D'))
+            t_valid = t_all[valid_in_mission]
+            last_valid = t_valid[-1]
 
-            # Failure threshold: sensor had decent coverage early (>5% in
-            # the first third of deployment) then stopped in the last 15%
-            early_mask = t_all <= t_all[0] + (t_all[-1] - t_all[0]) // 3
-            early_coverage = float(np.sum(valid & early_mask)) / max(np.sum(early_mask), 1)
+            days_from_end = float(
+                (mission_end - last_valid) / np.timedelta64(1, 'D'))
 
-            if (days_from_end > max(deployment_span_days * 0.15, 5)
+            # Failure threshold: sensor had decent coverage in first third of
+            # mission then stopped more than 15% before mission end
+            first_third = mission_start + (mission_end - mission_start) // 3
+            early_mask = in_mission & (t_all <= first_third)
+            early_coverage = (float(np.sum(valid & early_mask)) /
+                              max(np.sum(early_mask), 1))
+
+            if (days_from_end > max(mission_span_days * 0.15, 5)
                     and early_coverage > 0.05):
                 sensor_issues.append(
                     f"  ⚠  {var:22s}: last valid reading {str(last_valid)[:19]} "
-                    f"({days_from_end:.0f} days before end of deployment) "
+                    f"({days_from_end:.0f} days before end of mission) "
                     f"— possible sensor failure or removal "
                     f"[early coverage {early_coverage*100:.0f}%]")
 
         # Oxygen: use QC flags from L1 (consistent with flag summary above)
-        # to detect large bad blocks — not a separate raw-value check
         if l1_path and os.path.exists(l1_path):
             ds1_tmp = xr.open_dataset(l1_path)
             if "oxygen_concentration_QC" in ds1_tmp:
                 o_qc = ds1_tmp["oxygen_concentration_QC"].values.astype(int)
                 t_l1 = ds1_tmp.time.values
-                bad_mask = (o_qc == 4)  # flag 4 = Bad (includes QC-nulled values)
+                bad_mask = (o_qc == 4)
                 if np.sum(bad_mask) > 100:
                     bad_times = t_l1[bad_mask]
                     bad_days  = np.unique(bad_times.astype("datetime64[D]"))
-                    # Only report if bad block is contiguous / time-localised
-                    # (not just scattered spikes — those are normal)
                     bad_span_days = float(
                         (bad_times[-1] - bad_times[0]) / np.timedelta64(1, 'D'))
                     frac_bad = np.sum(bad_mask) / max(len(o_qc), 1)
                     if bad_span_days > 5 and frac_bad > 0.05:
-                        # Check if already caught by the "stopped early" detector
                         already_flagged = any(
                             "oxygen_concentration" in s for s in sensor_issues)
                         if not already_flagged:

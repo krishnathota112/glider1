@@ -1359,11 +1359,13 @@ def run_step23(l0_path=None):
     print(f"  Variables: {len(ds.data_vars)}")
 
     ds = pre_clean(ds)
-    ds = detect_variable_corruption(ds)
 
     # Snapshot which positions are NaN RIGHT NOW — after pre-clean (time-crop,
-    # depth-segmentation) but before physics QC NaN-nulls any values.
+    # depth-segmentation) but BEFORE detect_variable_corruption or any QC runs.
     # This is the ground truth for "originally missing" vs "removed by QC".
+    # CRITICAL: must happen before detect_variable_corruption, which may null
+    # entire variables if they're corrupted — we want those nulled points to
+    # show as Bad (flag 4), not Miss (flag 9).
     l0_nan_mask = {}
     for var in ["temperature", "salinity", "pressure", "oxygen_concentration",
                 "chlorophyll", "cdom", "backscatter_700", "density",
@@ -1371,6 +1373,7 @@ def run_step23(l0_path=None):
         if var in ds:
             l0_nan_mask[var] = np.isnan(ds[var].values).copy()
 
+    ds = detect_variable_corruption(ds)
     ds = apply_optics_correction(ds)
     ds = apply_physics_qc(ds)
     ds = oxygen_lag_correction(ds)
