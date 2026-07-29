@@ -131,6 +131,9 @@ def check_new_dataset(ds, label="L0"):
     if not issues:
         print("\n  All integrity checks passed.")
     return issues
+
+
+def check_gps(ds):
     """1. GPS / MAP diagnostics."""
     print("\n" + "=" * 70)
     print("  1. GPS / TRACK DIAGNOSTICS")
