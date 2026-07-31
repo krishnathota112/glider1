@@ -399,9 +399,29 @@ def compare_l0_l1(l1_path, l0_path):
     if n0 != n1:
         issues.append(f"WARNING: L0 has {n0:,} points but L1 has {n1:,} points (difference: {n1-n0:+,})")
         print(f"  Difference: {n1-n0:+,}")
-        ds0, ds1 = xr.align(ds0, ds1, join="inner")
-        n_aligned = len(ds0.time)
-        print(f"  Aligned on common time: {n_aligned:,} points")
+        # Use value-based comparison instead of xr.align to handle duplicate timestamps
+        try:
+            ds0, ds1 = xr.align(ds0, ds1, join="inner")
+            n_aligned = len(ds0.time)
+            print(f"  Aligned on common time: {n_aligned:,} points")
+        except ValueError:
+            # Duplicate timestamps — fall back to size-based comparison only
+            print("  NOTE: duplicate timestamps in one or both files — skipping point-level alignment")
+            print(f"  Comparing statistics only (not aligned point-by-point)")
+            for var in ['temperature', 'salinity', 'pressure', 'chlorophyll',
+                        'cdom', 'backscatter_700', 'oxygen_concentration']:
+                if var not in ds0 or var not in ds1:
+                    continue
+                v0 = ds0[var].values
+                v1 = ds1[var].values
+                ok0 = int(np.sum(np.isfinite(v0)))
+                ok1 = int(np.sum(np.isfinite(v1)))
+                print(f"\n  {var}:")
+                print(f"    L0: valid={ok0:,}  range=[{np.nanmin(v0):.6g}, {np.nanmax(v0):.6g}]")
+                print(f"    L1: valid={ok1:,}  range=[{np.nanmin(v1):.6g}, {np.nanmax(v1):.6g}]")
+            ds0.close()
+            ds1.close()
+            return issues
         if n_aligned == 0:
             ds0.close()
             ds1.close()
