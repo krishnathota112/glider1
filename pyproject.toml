@@ -1,0 +1,32 @@
+[project]
+name = "glider-rtqc"
+version = "0.1.0"
+description = "INCOIS Glider RTQC processing pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "xarray",
+    "scipy",
+    "matplotlib",
+    "netCDF4",
+    "pyyaml",
+    "gsw",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+glider-rtqc = "glider_rtqc.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"glider_rtqc" = ["*.yml", "*.yaml"]

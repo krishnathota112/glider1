@@ -87,4 +87,10 @@ if [ -n "$2" ]; then
 fi
 
 # --- Run ---
-"$PYTHON" "$PIPELINE_DIR/run_pipeline.py" $DATA_DIR_ARG $L0_ARG $SKIP_ARG
+# Use installed glider-rtqc console script if available, otherwise fall back
+# to running run_pipeline.py directly (works before pip install).
+if "$PYTHON" -m glider_rtqc.cli --help >/dev/null 2>&1; then
+    "$PYTHON" -m glider_rtqc.cli $DATA_DIR_ARG $L0_ARG $SKIP_ARG
+else
+    "$PYTHON" "$PIPELINE_DIR/run_pipeline.py" $DATA_DIR_ARG $L0_ARG $SKIP_ARG
+fi
