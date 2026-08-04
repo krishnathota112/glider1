@@ -16,6 +16,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Step 1 (binary decode) only. Needs a C compiler on Windows; every other
+# stage runs without it, so it is not a hard dependency.
+decode = ["dbdreader"]
+# Enables the GliderTools comparison report in step 6.
+compare = ["glidertools"]
+# Nicer basemaps and oceanographic colormaps in steps 6 and 7.
+plots = ["cartopy", "cmocean"]
+dashboard = ["flask"]
 dev = ["pytest", "pytest-cov"]
 
 [project.scripts]
@@ -25,8 +33,17 @@ glider-rtqc = "glider_rtqc.cli:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# `pipeline` and `db` are top-level packages at the repo root, alongside the
+# src/ layout used by `glider_rtqc`. Both roots must be declared: listing only
+# src/ left cli.py importing a `pipeline` package that pip had never installed,
+# so the console script worked from a checkout and nowhere else.
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["glider_rtqc*", "pipeline*", "db*"]
 
 [tool.setuptools.package-data]
 "glider_rtqc" = ["*.yml", "*.yaml"]
+"db" = ["*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

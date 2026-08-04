@@ -82,7 +82,7 @@ if _args.deploy_yml:
     _cfg.DEPLOY_YAML = os.path.abspath(_args.deploy_yml)
 
 from config import (
-    OUTPUT_DIR, GLIDER_ID, print_config, ensure_dirs,
+    OUTPUT_DIR, GLIDER_ID, print_config,
     get_l0_path, setup_binary_dir, detect_deployment,
     RUN_STEP1, RUN_STEP23, RUN_STEP4, RUN_STEP5, RUN_VERIFY,
 )
@@ -110,18 +110,6 @@ def _dirs():
 def _l0_nc(dirs):
     return os.path.join(dirs["L0_ts"],
                         f"incois_glider_{GLIDER_ID}_L0.nc")
-
-def _l1_nc(dirs):
-    return os.path.join(dirs["L1_ts"],
-                        f"incois_glider_{GLIDER_ID}_L1.nc")
-
-def _l0_grid_nc(dirs):
-    return os.path.join(dirs["L0_grid"],
-                        f"incois_glider_{GLIDER_ID}_L0_grid.nc")
-
-def _l1_grid_nc(dirs):
-    return os.path.join(dirs["L1_grid"],
-                        f"incois_glider_{GLIDER_ID}_L1_grid.nc")
 
 
 # ── Main ─────────────────────────────────────────────────────────
@@ -211,9 +199,7 @@ def main():
     if RUN_STEP1 and not _skip1:
         print()
         from step1 import run_step1
-        _cfg.OUTPUT_DIR = dirs["L0_ts"]   # write L0 into L0-timeseries/
-        l0_path = run_step1()
-        _cfg.OUTPUT_DIR = OUTPUT_DIR       # restore
+        l0_path = run_step1(out_dir=dirs["L0_ts"])
         print()
     else:
         # Step 1 was explicitly skipped — use provided or auto-detected L0
@@ -265,16 +251,7 @@ def main():
     l1_path = None
     if RUN_STEP23:
         from step23 import run_step23
-        # Write L1 into L1-timeseries/
-        _cfg.OUTPUT_DIR = dirs["L1_ts"]
-        l1_path = run_step23(l0_path)
-        _cfg.OUTPUT_DIR = OUTPUT_DIR
-        # Move/copy to correct name if needed
-        expected = _l1_nc(dirs)
-        if l1_path and os.path.exists(l1_path) and l1_path != expected:
-            import shutil
-            shutil.move(l1_path, expected)
-            l1_path = expected
+        l1_path = run_step23(l0_path, out_dir=dirs["L1_ts"])
         print()
 
     if not l1_path or not os.path.exists(l1_path):
@@ -306,7 +283,6 @@ def main():
 
     # ── Step 5: Time-depth plots (L0 raw + L1 QC) ────────────────
     if RUN_STEP5:
-        _cfg.OUTPUT_DIR = OUTPUT_DIR
         from step5 import run_step5
         run_step5(l1_grid_path,
                   l1_path=l1_path,

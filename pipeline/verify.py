@@ -166,10 +166,29 @@ def check_gps(ds):
     if lon_out > 0:
         issues.append(f"WARNING: {lon_out} longitudes outside [-180, 180]")
 
-    # Arabian Sea check
-    arabian = np.isfinite(lat) & np.isfinite(lon) & (lat >= 5) & (lat <= 25) & (lon >= 55) & (lon <= 80)
-    n_arabian = int(np.sum(arabian))
-    print(f"  In Arabian Sea:  {n_arabian:,} / {n:,} ({100*n_arabian/n:.1f}%)")
+    # Track dispersion — how tightly the fixes cluster around the deployment
+    # centre. Replaces a hardcoded Arabian Sea bounding box, which reported
+    # "0.0% in Arabian Sea" for every deployment outside one specific basin
+    # and told you nothing about whether the track was actually coherent.
+    valid_pos = np.isfinite(lat) & np.isfinite(lon)
+    if np.sum(valid_pos) > 0:
+        med_lat = float(np.median(lat[valid_pos]))
+        med_lon = float(np.median(lon[valid_pos]))
+        deg = np.sqrt((lat[valid_pos] - med_lat) ** 2
+                      + ((lon[valid_pos] - med_lon)
+                         * np.cos(np.radians(med_lat))) ** 2)
+        print(f"  Track centre:    {med_lat:.4f}, {med_lon:.4f}")
+        print(f"  Spread from centre: p50={np.percentile(deg, 50) * 111.32:.1f} km  "
+              f"p99={np.percentile(deg, 99) * 111.32:.1f} km  "
+              f"max={deg.max() * 111.32:.1f} km")
+        # A cluster far from the bulk of the track is the signature of
+        # factory-test or ferry fixes that pre-clean did not catch.
+        n_far = int(np.sum(deg > 10.0))
+        if n_far > 0:
+            issues.append(
+                f"WARNING: {n_far:,} GPS fixes more than 10 deg "
+                f"(~1100 km) from the track centre — possible factory-test "
+                f"or cross-deployment contamination")
 
     # Sudden jumps — check per-profile to avoid false positives at profile boundaries
     profile_index = ds['profile_index'].values if 'profile_index' in ds else None
@@ -295,11 +314,17 @@ def check_ts(ds):
         if s_stuck_frac > 0.95:
             issues.append(f"WARNING: Salinity appears over-smoothed — {s_stuck_frac*100:.1f}% stuck values")
 
-    # Arabian Sea T-S sanity
-    warm = valid_ts & (temp > 25)
-    if np.sum(warm) > 0:
-        warm_sal = sal[warm]
-        print(f"\n  Warm water (>25C) salinity: [{np.nanmin(warm_sal):.2f}, {np.nanmax(warm_sal):.2f}] PSU (mean: {np.nanmean(warm_sal):.2f})")
+    # Surface-water T-S sanity. Reported for whatever warm end the deployment
+    # actually has rather than a fixed 25C tropical cut, so it stays
+    # informative in temperate and polar water too.
+    if n_ts > 0:
+        warm_cut = float(np.nanpercentile(temp[valid_ts], 90))
+        warm = valid_ts & (temp >= warm_cut)
+        if np.sum(warm) > 0:
+            warm_sal = sal[warm]
+            print(f"\n  Warmest 10% (T >= {warm_cut:.2f}C) salinity: "
+                  f"[{np.nanmin(warm_sal):.2f}, {np.nanmax(warm_sal):.2f}] PSU "
+                  f"(mean: {np.nanmean(warm_sal):.2f})")
 
     return issues
 

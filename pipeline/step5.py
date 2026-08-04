@@ -82,6 +82,29 @@ _PLOT_PHYS_RANGE = {
 }
 
 
+def _slot_lookup(name, table, default=None):
+    """
+    Look `name` up in a variable-keyed table, tolerating slot labels.
+
+    Panels are titled by *slot* label ("oxygen") while the lookup tables are
+    keyed by *variable* name ("oxygen_concentration"). A direct .get() on the
+    slot label therefore missed: the oxygen panel silently fell back to the
+    (-inf, inf) physical range, so -9999 fill values reached the colour scale,
+    and its colourbar read a bare "oxygen" instead of "Oxygen [µmol/L]".
+
+    Falls back through every candidate name registered for the slot.
+    """
+    if name in table:
+        return table[name]
+    for slot_label, candidates, _cmap in PLOT_SLOTS:
+        if name == slot_label or name in candidates:
+            for cand in candidates:
+                if cand in table:
+                    return table[cand]
+            break
+    return default
+
+
 def _apply_phys_range(V, var_name):
     """
     NaN out values outside physical plausibility range before colorscaling.
@@ -89,7 +112,7 @@ def _apply_phys_range(V, var_name):
     Returns the cleaned copy and the number of cells nulled.
     """
     Vc = V.copy()
-    lo, hi = _PLOT_PHYS_RANGE.get(var_name, (-np.inf, np.inf))
+    lo, hi = _slot_lookup(var_name, _PLOT_PHYS_RANGE, (-np.inf, np.inf))
     bad = np.isfinite(Vc) & ((Vc < lo) | (Vc > hi))
     n_bad = int(np.sum(bad))
     if n_bad > 0:
@@ -161,22 +184,46 @@ def _pcolormesh_edges(centers):
     return edges
 
 
+def _qc_retention(ds, var_name):
+    """
+    Return (pct_good, pct_removed) for a variable, or None if unknown.
+
+    Two sources, because the L1 plot is fed from either product:
+      * timeseries — the <var>_QC flag array is present, count it directly;
+      * grid       — binning destroys per-cell flags, so step4.make_grid stores
+                     the retention figures as variable attributes instead.
+        Reading only the flag array meant the annotation never rendered on the
+        grid path, which is the default path.
+    """
+    qc_var = f"{var_name}_QC"
+    if qc_var in ds:
+        qc = ds[qc_var].values.astype(float)
+        total = float(np.sum(np.isfinite(qc) & (qc > 0)))
+        if total > 0:
+            good = float(np.sum((qc == 1) | (qc == 2)))
+            gone = float(np.sum((qc == 3) | (qc == 4) | (qc == 9)))
+            return 100 * good / total, 100 * gone / total
+
+    if var_name in ds:
+        attrs = ds[var_name].attrs
+        if "qc_pct_good" in attrs:
+            try:
+                good = float(attrs["qc_pct_good"])
+                gone = (float(attrs.get("qc_pct_removed", 0.0))
+                        + float(attrs.get("qc_pct_missing", 0.0)))
+                return good, gone
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
 def _add_qc_annotation(ax, ds, var_name, slot_label):
     """Add a QC retention annotation to a plot panel."""
-    qc_var = f"{var_name}_QC"
-    if qc_var not in ds:
+    retention = _qc_retention(ds, var_name)
+    if retention is None:
         return
-    qc = ds[qc_var].values.astype(float)
-    total = np.sum(np.isfinite(qc) & (qc > 0))  # total assessed (not flag 0/unset)
-    if total == 0:
-        return
-    good = np.sum((qc == 1) | (qc == 2))
-    bad = np.sum((qc == 3) | (qc == 4))
-    missing = np.sum(qc == 9)
-    pct_good = 100 * good / max(total, 1)
-    pct_removed = 100 * (bad + missing) / max(total, 1)
+    pct_good, pct_removed = retention
 
-    # Add text annotation in top-right corner
     text = f"QC: {pct_good:.1f}% good"
     if pct_removed > 0.1:
         text += f" | {pct_removed:.1f}% removed"
@@ -199,45 +246,6 @@ def _mask_time_gaps(data, time_values, gap_hours=GAP_THRESHOLD_HOURS):
     for idx in gap_starts:
         masked[idx, :] = np.nan
     return masked
-
-
-def _max_data_depth(ds, vars_list, depth_vals, coverage_threshold=0.10):
-    """
-    Find the deepest depth bin with meaningful data coverage.
-
-    Universal approach: deepest bin where at least `coverage_threshold`
-    fraction of profiles have data. With bin-averaging (no interpolation),
-    this works correctly for any glider depth range.
-    """
-    n_depth = len(depth_vals)
-    total_coverage = np.zeros(n_depth, dtype=float)
-    n_profiles_max = 0
-
-    for var in vars_list:
-        if var in ds:
-            v = ds[var].values
-            if v.ndim == 2 and v.shape[1] == n_depth:
-                n_profiles = v.shape[0]
-                n_profiles_max = max(n_profiles_max, n_profiles)
-                col_counts = np.sum(np.isfinite(v), axis=0).astype(float)
-                total_coverage = np.maximum(total_coverage, col_counts)
-
-    if n_profiles_max == 0:
-        return float(depth_vals.max()) if len(depth_vals) > 0 else 1000.0
-
-    frac = total_coverage / n_profiles_max
-    bins_with_coverage = np.where(frac >= coverage_threshold)[0]
-    if len(bins_with_coverage) > 0:
-        max_d = float(depth_vals[bins_with_coverage[-1]])
-        padding = max(10.0, max_d * 0.05)
-        return min(max_d + padding, float(depth_vals.max()))
-
-    # Fallback: any bin with data
-    any_data = np.where(total_coverage > 0)[0]
-    if len(any_data) > 0:
-        return float(depth_vals[any_data[-1]])
-
-    return float(depth_vals.max()) if len(depth_vals) > 0 else 1000.0
 
 
 def _report_gaps(t_vals):
@@ -332,8 +340,7 @@ def _draw_pcolormesh(ax, t_vals, depth_vals, V, cmap, label, max_depth):
     ax.set_title(label, fontsize=13, fontweight="bold")
     ax.set_ylabel("Depth (m)", fontsize=11)
     cbar = plt.colorbar(mesh, ax=ax, pad=0.02)
-    cbar_label = VAR_LABELS.get(label, label)
-    cbar.set_label(cbar_label, fontsize=11)
+    cbar.set_label(_slot_lookup(label, VAR_LABELS, label), fontsize=11)
     return True
 
 
@@ -835,8 +842,10 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
                              figsize=(14, 4 * n_panels), sharex=True)
     if n_panels == 1:
         axes = [axes]
+    # NaN cells render white (cmap.set_bad below), so the legend says white —
+    # it previously promised grey, which nothing in the figure ever draws.
     fig.suptitle(f"Glider {GLIDER_ID}  —  L1 QC-Filtered (only good data, flags 1 & 2)\n"
-                 f"Grey regions = data removed by QC",
+                 f"White = no data, or removed by QC",
                  fontsize=13, fontweight="bold", y=1.02)
 
     for i, (slot_label, var, cmap) in enumerate(detected):
@@ -861,7 +870,8 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
                 print(f"    {var}: shape {V.shape} (depth_vals={len(depth_vals)})")
                 depth_vals_eff = np.arange(V.shape[1]) * DEPTH_BIN
                 _draw_pcolormesh(ax, t_vals, depth_vals_eff, V,
-                                 cmap, var, max_depth)
+                                 cmap, slot_label, max_depth)
+                _add_qc_annotation(ax, ds, var, slot_label)
                 continue
             else:
                 ax.set_title(f"{var} (shape mismatch: {V.shape})", fontsize=13)
@@ -893,7 +903,7 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
             ax.set_title(slot_label, fontsize=13, fontweight="bold")
             ax.set_ylabel("Depth (m)", fontsize=11)
             cbar = plt.colorbar(sc, ax=ax, pad=0.02)
-            cbar.set_label(VAR_LABELS.get(var, var), fontsize=11)
+            cbar.set_label(_slot_lookup(var, VAR_LABELS, var), fontsize=11)
             # QC retention annotation
             _add_qc_annotation(ax, ds, var, slot_label)
         else:

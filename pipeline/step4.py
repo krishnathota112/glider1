@@ -55,6 +55,34 @@ def _qc_mask(ds, var):
     return np.ones(len(ds.time), dtype=bool)
 
 
+def _qc_retention_attrs(ds, var):
+    """
+    Summarise a variable's QC outcome for storage on the gridded variable.
+
+    A grid cell averages many source observations, so a per-cell flag array
+    would be meaningless — but the deployment-level retention *is* real
+    provenance, and without it the gridded product carries no record that QC
+    was applied at all. Returns {} when the source has no flags.
+    """
+    qc_var = f"{var}_QC"
+    if qc_var not in ds:
+        return {}
+    qc = ds[qc_var].values.astype(int)
+    assessed = int(np.sum(qc > 0))
+    if assessed == 0:
+        return {}
+    good    = int(np.sum((qc == 1) | (qc == 2)))
+    removed = int(np.sum((qc == 3) | (qc == 4)))
+    missing = int(np.sum(qc == 9))
+    return {
+        "qc_source_variable": qc_var,
+        "qc_n_assessed":      str(assessed),
+        "qc_pct_good":        f"{100.0 * good / assessed:.2f}",
+        "qc_pct_removed":     f"{100.0 * removed / assessed:.2f}",
+        "qc_pct_missing":     f"{100.0 * missing / assessed:.2f}",
+    }
+
+
 # ── Profile splitting ────────────────────────────────────────────
 
 def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
@@ -73,7 +101,10 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
     Number of profiles written.
     """
     os.makedirs(out_dir, exist_ok=True)
-    ds = xr.open_dataset(nc_path)
+    if not os.path.exists(nc_path) or os.path.getsize(nc_path) < 1000:
+        print(f"  ERROR: input file missing or empty: {nc_path}")
+        return 0
+    ds = xr.open_dataset(nc_path, engine="netcdf4")
 
     if "profile_index" not in ds:
         print("  WARNING: no profile_index — cannot split profiles")
@@ -219,7 +250,10 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
     Path to the written grid NetCDF.
     """
     os.makedirs(out_dir, exist_ok=True)
-    ds = xr.open_dataset(nc_path)
+    if not os.path.exists(nc_path) or os.path.getsize(nc_path) < 1000:
+        print(f"  ERROR: input file missing or empty: {nc_path}")
+        return None
+    ds = xr.open_dataset(nc_path, engine="netcdf4")
 
     if "profile_index" not in ds:
         print(f"  WARNING: no profile_index in {nc_path} — cannot grid")
@@ -293,8 +327,13 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
     for var in vars_to_grid:
         if var in ds:
             arr = np.vstack(gridded[var])
-            gds[var] = xr.DataArray(arr, dims=["time", "depth"],
-                                    attrs=ds[var].attrs.copy())
+            attrs = ds[var].attrs.copy()
+            if apply_qc:
+                # Carry the QC outcome forward as provenance — the per-cell
+                # flags cannot survive binning, but the retention figures are
+                # what the plots and reports need to state what was filtered.
+                attrs.update(_qc_retention_attrs(ds, var))
+            gds[var] = xr.DataArray(arr, dims=["time", "depth"], attrs=attrs)
 
     # Carry all global attributes from source
     gds.attrs = ds.attrs.copy()
@@ -318,33 +357,37 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
     return out_path
 
 
-# ── Legacy entry point (for backward compatibility) ─────────────
+# ── Standalone entry point ──────────────────────────────────────
 
-def run_step4(l1_path=None):
-    """Backward-compatible wrapper used by old run_pipeline.py."""
-    print("=" * 60)
-    print("  STEP 4: Profiles + Grid Generation")
-    print("=" * 60)
+def main(argv=None):
+    """Split profiles and build the grid for one timeseries NetCDF."""
+    import argparse
+    p = argparse.ArgumentParser(
+        description="Split a timeseries NetCDF into profiles and grid it.")
+    p.add_argument("nc_path", help="input timeseries NetCDF (L0 or L1)")
+    p.add_argument("--out-dir", required=True,
+                   help="directory for the profiles/ and grid outputs")
+    p.add_argument("--base-name", default=None,
+                   help="filename prefix (default: derived from nc_path)")
+    p.add_argument("--apply-qc", action="store_true",
+                   help="keep only ARGO QC flags 1 and 2 (use for L1)")
+    args = p.parse_args(argv)
+
+    if not os.path.exists(args.nc_path):
+        print(f"ERROR: file not found: {args.nc_path}")
+        return 1
+
+    base = args.base_name or os.path.splitext(
+        os.path.basename(args.nc_path))[0]
+
     t0 = time.time()
-
-    if l1_path is None:
-        l1_path = os.path.join(OUTPUT_DIR, "l1",
-                               f"incois_glider_{GLIDER_ID}_L1.nc")
-    if not os.path.exists(l1_path):
-        print(f"ERROR: L1 file not found: {l1_path}")
-        sys.exit(1)
-
-    profiles_dir = os.path.join(OUTPUT_DIR, "profiles")
-    grid_dir     = os.path.join(OUTPUT_DIR, "gridfiles")
-    base         = f"incois_glider_{GLIDER_ID}"
-
-    split_profiles(l1_path, profiles_dir, base, apply_qc=True)
-    grid_out = make_grid(l1_path, grid_dir, f"{base}_grid.nc", apply_qc=True)
-
-    print(f"\n  STEP 4 COMPLETE in {time.time() - t0:.1f}s")
-    return grid_out
+    split_profiles(args.nc_path, os.path.join(args.out_dir, "profiles"),
+                   base, apply_qc=args.apply_qc)
+    make_grid(args.nc_path, os.path.join(args.out_dir, "gridfiles"),
+              f"{base}_grid.nc", apply_qc=args.apply_qc)
+    print(f"\n  COMPLETE in {time.time() - t0:.1f}s")
+    return 0
 
 
 if __name__ == "__main__":
-    l1 = sys.argv[1] if len(sys.argv) > 1 else None
-    run_step4(l1)
+    sys.exit(main())

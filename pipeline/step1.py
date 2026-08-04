@@ -11,7 +11,7 @@ import time
 import numpy as np
 import xarray as xr
 from scipy.interpolate import interp1d
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import (
@@ -739,7 +739,8 @@ def write_netcdf(synced, config, output_path):
         "platform_type": meta.get("platform_type", "Slocum Glider"),
         "sea_name": meta.get("sea_name", ""),
         "processing_level": "L0 - raw decoded data, no QC applied",
-        "date_created": datetime.utcnow().isoformat() + "Z",
+        "date_created": datetime.now(timezone.utc)
+                                .replace(tzinfo=None).isoformat() + "Z",
     }
 
     ds.to_netcdf(output_path)
@@ -750,7 +751,19 @@ def write_netcdf(synced, config, output_path):
     return output_path
 
 
-def run_step1():
+def run_step1(out_dir=None):
+    """
+    Decode the raw binaries into a single L0 timeseries NetCDF.
+
+    out_dir : directory to write the L0 into. Defaults to config.OUTPUT_DIR.
+
+    Taking the destination as an argument — the way make_grid and
+    split_profiles already do — is what makes the caller's choice actually
+    take effect. `from config import OUTPUT_DIR` binds at import time, so
+    run_pipeline reassigning config.OUTPUT_DIR after importing this module had
+    no effect here, and the L0 landed in output/ instead of the
+    output/L0-timeseries/ that the orchestrator had just created for it.
+    """
     print("=" * 60)
     print("  STEP 1: Binary -> L0 NetCDF")
     print("=" * 60)
@@ -773,7 +786,10 @@ def run_step1():
     synced = derive_variables(synced)
     synced = detect_profiles(synced)
 
-    output_path = os.path.join(OUTPUT_DIR, f"incois_glider_{GLIDER_ID}_L0.nc")
+    if out_dir is None:
+        out_dir = OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    output_path = os.path.join(out_dir, f"incois_glider_{GLIDER_ID}_L0.nc")
     write_netcdf(synced, config, output_path)
 
     print(f"\n  STEP 1 COMPLETE in {time.time() - t0:.1f}s")
@@ -781,4 +797,9 @@ def run_step1():
 
 
 if __name__ == "__main__":
-    run_step1()
+    import argparse
+    _p = argparse.ArgumentParser(description="Decode Slocum binaries to L0")
+    _p.add_argument("--out-dir", default=None,
+                    help="Directory for the L0 NetCDF "
+                         "(default: config.OUTPUT_DIR)")
+    run_step1(out_dir=_p.parse_args().out_dir)

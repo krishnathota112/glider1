@@ -325,48 +325,6 @@ def outlier_bounds_iqr(data, multiplier=1.5):
     return out, n_bad
 
 
-def outlier_bounds_iqr_per_profile(data, profile_index, multiplier=3.0,
-                                    min_iqr=None):
-    """
-    Per-profile IQR outlier removal for T/S/O2.
-
-    Glider data has strong vertical structure — applying IQR globally would
-    flag warm surface water as outliers when most data is deep cold water.
-    Operating per-profile preserves the vertical signal while removing
-    within-profile spikes and sensor glitches.
-
-    min_iqr: minimum IQR floor to prevent collapsing bounds on flat profiles
-             (e.g. mixed layer). Defaults to 0.05 * variable range.
-    """
-    out = data.copy()
-    n_bad_total = 0
-    valid_mask = np.isfinite(data) & np.isfinite(profile_index)
-    if np.sum(valid_mask) < 10:
-        return out, 0
-
-    # Global range used to set a sensible minimum IQR floor
-    global_range = np.nanmax(data[valid_mask]) - np.nanmin(data[valid_mask])
-    if min_iqr is None:
-        # Floor = 1% of global range, minimum 0.02 (handles near-constant profiles)
-        min_iqr = max(0.02, 0.01 * global_range)
-
-    profiles = np.unique(profile_index[valid_mask])
-    for p in profiles:
-        p_mask = valid_mask & (profile_index == p)
-        p_vals = data[p_mask]
-        if len(p_vals) < 6:
-            continue
-        q1, q3 = np.percentile(p_vals, [25, 75])
-        iqr = max(q3 - q1, min_iqr)
-        lo = q1 - multiplier * iqr
-        hi = q3 + multiplier * iqr
-        bad = p_mask & ((data < lo) | (data > hi))
-        n_bad = int(np.sum(bad))
-        out[bad] = np.nan
-        n_bad_total += n_bad
-    return out, n_bad_total
-
-
 def despike_median(data, window=5):
     baseline = data.copy()
     valid = np.isfinite(baseline)
@@ -892,6 +850,50 @@ def oxygen_lag_correction(ds):
 # ARGO RTQC TESTS
 # ============================================================
 
+# Severity ranking used to resolve competing verdicts. Flag 9 (missing) is
+# deliberately absent: it is not a verdict about a value, it is the statement
+# that there is no value, so it neither wins nor loses a comparison.
+_FLAG_SEVERITY = {1: 0, 2: 1, 3: 2, 4: 3}
+
+# Lookup table for the same ranking, indexed by flag value, so the comparison
+# vectorises. Size 10 covers every flag in ARGO Reference Table 2; entries the
+# pipeline never emits (0, 5-8) stay at -1 and therefore always lose, which is
+# the safe direction — an unknown flag gets replaced by a real verdict.
+_SEVERITY_LUT = np.full(10, -1, dtype=np.int8)
+for _flag, _rank in _FLAG_SEVERITY.items():
+    _SEVERITY_LUT[_flag] = _rank
+
+
+def _raise_flag(qc, mask, flag):
+    """
+    Apply `flag` where `mask` is True, keeping whichever verdict is worse.
+
+    The RTQC tests run in sequence and several of them judge the same variable.
+    A plain ``qc[mask] = flag`` lets a later, milder test erase an earlier,
+    harsher one. That is not cosmetic: test 19 (deepest pressure, flag 3) runs
+    after test 6 (global range, flag 4), so a pressure of 2500 dbar was being
+    downgraded 4 -> 3, after which pressure_cascade no longer recognised it as
+    bad and the temperature and salinity measured at that impossible pressure
+    kept flag 1 (good).
+
+    Positions already flagged 9 (missing) are left untouched — a test cannot
+    return a verdict on a value that is not there.
+
+    Returns the number of positions actually changed.
+    """
+    if flag not in _FLAG_SEVERITY:
+        raise ValueError(
+            f"_raise_flag handles verdict flags {sorted(_FLAG_SEVERITY)}, "
+            f"got {flag}. Flag 9 (missing) is set once at initialisation "
+            f"from the L0 NaN mask and must not be re-derived here."
+        )
+    mask = np.asarray(mask, dtype=bool)
+    upgrade = mask & (qc != 9) & (_SEVERITY_LUT[qc] < _FLAG_SEVERITY[flag])
+    n_changed = int(np.count_nonzero(upgrade))
+    qc[upgrade] = flag
+    return n_changed
+
+
 def test_impossible_date(ds, qc_dict):
     flagged = 0
     try:
@@ -899,29 +901,41 @@ def test_impossible_date(ds, qc_dict):
         juld_ref = np.datetime64("1997-01-01", "ns")
         now = np.datetime64("now", "ns")
         bad = (time_ns < juld_ref) | (time_ns > now)
-        n_bad = int(np.sum(bad))
-        if n_bad > 0:
+        if np.any(bad):
             for var in qc_dict:
-                qc_dict[var][bad] = 4
-            flagged = n_bad
+                _raise_flag(qc_dict[var], bad, 4)
+            flagged = int(np.sum(bad))
     except Exception:
         pass
     return flagged
 
 
 def test_impossible_location(ds, qc_dict):
+    """
+    Flag positions outside the valid lat/lon domain.
+
+    Only finite-but-impossible values are judged here. A non-finite position is
+    absent, not wrong, and is already carried as flag 9 from the L0 NaN mask.
+    """
+    flagged = 0
     lat = ds["latitude"].values if "latitude" in ds else None
     lon = ds["longitude"].values if "longitude" in ds else None
     if lat is not None and "latitude" in qc_dict:
-        bad_lat = ~np.isfinite(lat) | (np.abs(lat) > 90)
-        qc_dict["latitude"][bad_lat] = 4
+        bad_lat = np.isfinite(lat) & (np.abs(lat) > 90)
+        flagged += _raise_flag(qc_dict["latitude"], bad_lat, 4)
     if lon is not None and "longitude" in qc_dict:
-        bad_lon = ~np.isfinite(lon) | (np.abs(lon) > 180)
-        qc_dict["longitude"][bad_lon] = 4
-    return 0
+        bad_lon = np.isfinite(lon) & (np.abs(lon) > 180)
+        flagged += _raise_flag(qc_dict["longitude"], bad_lon, 4)
+    return flagged
 
 
 def test_impossible_speed(ds, qc_dict, max_speed_ms=3.0):
+    """
+    Flag both endpoints of any GPS leg implying an impossible speed.
+
+    Judged as 'probably bad' (3): one bad fix in a pair makes the leg suspect
+    but does not identify which of the two positions is at fault.
+    """
     lat = ds["latitude"].values if "latitude" in ds else None
     lon = ds["longitude"].values if "longitude" in ds else None
     if lat is None or lon is None:
@@ -940,16 +954,20 @@ def test_impossible_speed(ds, qc_dict, max_speed_ms=3.0):
     dt[dt <= 0] = 1.0
     speed = dist / dt
     bad_speed = speed > max_speed_ms
+    if not np.any(bad_speed):
+        return 0
+
+    # Mark both endpoints of every offending leg. Building one mask instead of
+    # assigning per pair keeps consecutive bad legs from being counted twice.
     valid_idx = np.where(valid)[0]
-    flagged = 0
-    for i in np.where(bad_speed)[0]:
-        idx1 = valid_idx[i]
-        idx2 = valid_idx[i + 1]
-        for var in qc_dict:
-            qc_dict[var][idx1] = 3
-            qc_dict[var][idx2] = 3
-        flagged += 2
-    return flagged
+    leg = np.where(bad_speed)[0]
+    bad = np.zeros(len(qc_dict[next(iter(qc_dict))]), dtype=bool)
+    bad[valid_idx[leg]] = True
+    bad[valid_idx[leg + 1]] = True
+
+    for var in qc_dict:
+        _raise_flag(qc_dict[var], bad, 3)
+    return int(np.count_nonzero(bad))
 
 
 def test_global_range(ds, qc_dict):
@@ -971,12 +989,12 @@ def test_global_range(ds, qc_dict):
         bad = (vals < vmin) | (vals > vmax)
         n_bad = int(np.sum(bad))
         if var in qc_dict:
-            qc_dict[var][bad] = 4
+            _raise_flag(qc_dict[var], bad, 4)
         if var == "pressure" and n_bad > 0:
             pres_bad = vals < -5.0
             for v2 in ["temperature", "salinity"]:
                 if v2 in qc_dict:
-                    qc_dict[v2][pres_bad] = 4
+                    _raise_flag(qc_dict[v2], pres_bad, 4)
         flagged += n_bad
     return flagged
 
@@ -1027,8 +1045,9 @@ def test_pressure_increasing(ds, qc_dict, reversal_threshold=50.0):
     n_bad = int(np.sum(bad))
     if "pressure" in qc_dict:
         # Flag as "probably bad" (3), not "bad" (4) — pressure jitter
-        # doesn't invalidate the measurement, just the depth assignment
-        qc_dict["pressure"][bad] = 3
+        # doesn't invalidate the measurement, just the depth assignment.
+        # _raise_flag keeps any harsher verdict already set by test 6.
+        _raise_flag(qc_dict["pressure"], bad, 3)
     return n_bad
 
 
@@ -1071,7 +1090,7 @@ def test_spike(ds, qc_dict):
                     bad[idx_curr] = True
         n_bad = int(np.sum(bad))
         if var in qc_dict:
-            qc_dict[var][bad] = 4
+            _raise_flag(qc_dict[var], bad, 4)
         total_flagged += n_bad
     return total_flagged
 
@@ -1095,7 +1114,7 @@ def test_stuck_value(ds, qc_dict, run_length=10):
         bad[-run_length:] = False
         n_bad = int(np.sum(bad))
         if var in qc_dict:
-            qc_dict[var][bad] = 4
+            _raise_flag(qc_dict[var], bad, 4)
         total_flagged += n_bad
     return total_flagged
 
@@ -1135,7 +1154,7 @@ def test_density_inversion(ds, qc_dict, threshold=0.03):
     n_bad = int(np.sum(inv_mask))
     for v in ["temperature", "salinity", "density"]:
         if v in qc_dict:
-            qc_dict[v][inv_mask] = 4
+            _raise_flag(qc_dict[v], inv_mask, 4)
     return n_bad
 
 
@@ -1188,7 +1207,7 @@ def test_gross_sensor_drift(ds, qc_dict):
         if delta_s > 1.5:  # raised threshold — real ocean has gradients
             p_mask = (profile_index == p_curr)
             if "salinity" in qc_dict:
-                qc_dict["salinity"][p_mask] = np.maximum(qc_dict["salinity"][p_mask], 3)
+                _raise_flag(qc_dict["salinity"], p_mask, 3)
             flagged += int(np.sum(p_mask))
 
     prof_list_t = sorted(deep_means_t.keys())
@@ -1200,7 +1219,7 @@ def test_gross_sensor_drift(ds, qc_dict):
         if delta_t > 4.0:  # raised threshold — gliders cross thermal fronts
             p_mask = (profile_index == p_curr)
             if "temperature" in qc_dict:
-                qc_dict["temperature"][p_mask] = np.maximum(qc_dict["temperature"][p_mask], 3)
+                _raise_flag(qc_dict["temperature"], p_mask, 3)
             flagged += int(np.sum(p_mask))
     return flagged
 
@@ -1223,12 +1242,9 @@ def test_deepest_pressure(ds, qc_dict, config_pressure_dbar=1000.0):
     bad = p > threshold
     n_bad = int(np.sum(bad))
     if n_bad > 0:
-        if "pressure" in qc_dict:
-            qc_dict["pressure"][bad] = 3
-        if "temperature" in qc_dict:
-            qc_dict["temperature"][bad] = 3
-        if "salinity" in qc_dict:
-            qc_dict["salinity"][bad] = 3
+        for var in ("pressure", "temperature", "salinity"):
+            if var in qc_dict:
+                _raise_flag(qc_dict[var], bad, 3)
     return n_bad
 
 
@@ -1253,10 +1269,9 @@ def pressure_cascade(ds, qc_dict):
     for var in cascade_vars:
         if var not in qc_dict:
             continue
-        qc = qc_dict[var]
-        cascade_mask = pres_bad & (qc != 4) & (qc != 9)
-        n_casc += int(np.sum(cascade_mask))
-        qc[cascade_mask] = 4
+        # _raise_flag skips positions already at 4 (no change) and at 9
+        # (missing stays missing), which is exactly the old guard.
+        n_casc += _raise_flag(qc_dict[var], pres_bad, 4)
     return n_casc
 
 
@@ -1332,12 +1347,13 @@ def apply_argo_qc(ds, config_pressure_dbar=1000.0, l0_nan_mask=None):
         print(f"   Cascade (PRES_QC=4 -> T/S/O2/optics): flagged {nc}")
 
     if "temperature" in qc_dict and "salinity" in qc_dict:
+        # ARGO 2.1.4b: salinity is derived from conductivity *and* temperature,
+        # so a bad temperature invalidates the salinity computed with it, and a
+        # missing temperature makes that salinity unobtainable.
         t_qc = qc_dict["temperature"]
-        s_cascade = (t_qc == 4) & (qc_dict["salinity"] != 4) & (qc_dict["salinity"] != 9)
+        n_tc = _raise_flag(qc_dict["salinity"], t_qc == 4, 4)
         m_cascade = (t_qc == 9) & (qc_dict["salinity"] != 9)
-        n_tc = int(np.sum(s_cascade))
         n_tm = int(np.sum(m_cascade))
-        qc_dict["salinity"][s_cascade] = 4
         qc_dict["salinity"][m_cascade] = 9
         if n_tc + n_tm > 0:
             print(f"   Cascade (TEMP_QC -> SAL_QC):   flagged {n_tc + n_tm} (bad:{n_tc}, miss:{n_tm})")
@@ -1363,7 +1379,14 @@ def apply_argo_qc(ds, config_pressure_dbar=1000.0, l0_nan_mask=None):
 # MAIN ENTRY POINT
 # ============================================================
 
-def run_step23(l0_path=None):
+def run_step23(l0_path=None, out_dir=None):
+    """
+    Apply QC and ARGO RTQC flags, writing the L1 timeseries.
+
+    out_dir : directory to write the L1 into. Defaults to config.OUTPUT_DIR.
+              Passed explicitly rather than read from a module global that the
+              caller mutates after import — see run_step1 for the same reason.
+    """
     print("=" * 60)
     print("  STEP 2/3: L0 -> L1 (QC + ARGO flags)")
     print("=" * 60)
@@ -1407,10 +1430,10 @@ def run_step23(l0_path=None):
     ds.attrs["history"] = f"L1 processed on {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} using pipeline/step23.py"
     ds.attrs["processing_software"] = "pipeline/step23.py v1.0"
 
-    # OUTPUT_DIR may be overridden by run_pipeline.py to point at L1-timeseries/
-    # Write directly into it (no extra l1/ subdirectory)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    l1_path = os.path.join(OUTPUT_DIR, f"incois_glider_{GLIDER_ID}_L1.nc")
+    if out_dir is None:
+        out_dir = OUTPUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    l1_path = os.path.join(out_dir, f"incois_glider_{GLIDER_ID}_L1.nc")
     print(f"\n  Saving L1: {l1_path}")
     ds.to_netcdf(l1_path, mode="w", format="NETCDF4")
 
@@ -1433,5 +1456,12 @@ def run_step23(l0_path=None):
 
 
 if __name__ == "__main__":
-    l0 = sys.argv[1] if len(sys.argv) > 1 else None
-    run_step23(l0)
+    import argparse
+    _p = argparse.ArgumentParser(description="L0 -> L1 QC + ARGO RTQC flags")
+    _p.add_argument("l0_path", nargs="?", default=None,
+                    help="L0 NetCDF (default: <OUTPUT_DIR>/incois_glider_<ID>_L0.nc)")
+    _p.add_argument("--out-dir", default=None,
+                    help="Directory for the L1 NetCDF "
+                         "(default: config.OUTPUT_DIR)")
+    _a = _p.parse_args()
+    run_step23(_a.l0_path, out_dir=_a.out_dir)

@@ -18,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import OUTPUT_DIR, GLIDER_ID
@@ -446,7 +446,8 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
 
     w("=" * 70)
     w(f"  DEPLOYMENT SUMMARY — Glider {GLIDER_ID}")
-    w(f"  Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    w(f"  Generated: "
+      f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     w("=" * 70)
 
     # ---- L0 stats ----
@@ -914,15 +915,47 @@ def run_gt_comparison(l0_path, l1_path, report_path=None):
     l1 = xr.open_dataset(l1_path)
     n  = len(l0.time)
 
+    # ------------------------------------------------------------------
+    # Put L0 and L1 on a shared time axis before comparing anything.
+    #
+    # L1 is not a row-for-row copy of L0 — step23.pre_clean() crops to the
+    # deployment window and drops shallow test dives, so L1 is normally a
+    # subset. Comparing by position would pair an L0 sample against whichever
+    # L1 sample happened to land at the same index, i.e. a different moment in
+    # the deployment, and every difference statistic below would be noise.
+    #
+    # np.intersect1d gives the timestamps both files actually share, and the
+    # returned index arrays let us slice each file onto that common axis.
+    # ------------------------------------------------------------------
+    t0_vals = l0.time.values
+    t1_vals = l1.time.values
+    _common, i0, i1 = np.intersect1d(t0_vals, t1_vals,
+                                     return_indices=True)
+    n_common = len(_common)
+    aligned = n_common > 0
+    if aligned:
+        l0_cmp = l0.isel(time=i0)
+        l1_cmp = l1.isel(time=i1)
+    else:
+        l0_cmp = l1_cmp = None
+
     lines = []
     def w(s=""): lines.append(s)
 
     w("=" * 65)
     w(f"  OUR PIPELINE vs GLIDERTOOLS  —  Glider {GLIDER_ID}")
     w(f"  GliderTools {gt.__version__}")
-    w(f"  Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    w(f"  Generated: "
+      f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     w("=" * 65)
     w(f"  L0: {n:,} observations  |  L1: {len(l1.time):,} observations")
+    if aligned and n_common != n:
+        w(f"  Co-located on {n_common:,} shared timestamps "
+          f"({100.0 * n_common / max(n, 1):.1f}% of L0) — "
+          f"difference statistics use only these.")
+    elif not aligned:
+        w("  WARNING: L0 and L1 share no timestamps — "
+          "difference statistics omitted.")
     w()
 
     hdr = f"  {'Metric':42s}  {'GliderTools':>14}  {'Our L1':>12}"
@@ -957,39 +990,60 @@ def run_gt_comparison(l0_path, l1_path, report_path=None):
 
         raw = l0[var_name].values.copy().astype(float)
 
-        # GT QC: IQR + despike
+        # GT QC on the full L0 — this is the workflow a GliderTools user runs.
         try:
             gt_v = gt.cleaning.outlier_bounds_iqr(raw, multiplier=3.0)
             gt_v, _ = gt.cleaning.despike(gt_v, window_size=5,
                                            spike_method="median")
             gt_n = int(np.sum(np.isfinite(gt_v)))
+            gt_ok = True
         except Exception as e:
             gt_n = f"error: {str(e)[:25]}"
             gt_v = np.full_like(raw, np.nan)
+            gt_ok = False
 
         our_qc = l1[qc_name].values.astype(int) if qc_name in l1 else None
         our_n  = int(np.sum(our_qc == 1)) if our_qc is not None else 0
         our_v  = l1[var_name].values
+        n_l1   = len(l1.time)
 
-        r("Valid points after QC",    gt_n if isinstance(gt_n,int) else gt_n,  our_n)
-        r("% of L0 retained",
-          f"{100*gt_n/n:.1f}%" if isinstance(gt_n,int) else "?",
-          f"{100*our_n/n:.1f}%")
+        r("Valid points after QC", gt_n, our_n)
+        # Each retention figure is over its own file's length. They are not the
+        # same denominator when pre_clean dropped rows, so both are labelled.
+        r(f"% retained (GT of {n:,} L0 / ours of {n_l1:,} L1)",
+          f"{100*gt_n/max(n,1):.1f}%" if gt_ok else "?",
+          f"{100*our_n/max(n_l1,1):.1f}%")
 
-        if isinstance(gt_n, int) and np.any(np.isfinite(gt_v)):
-            r("Min value", float(np.nanmin(gt_v)), float(np.nanmin(our_v[our_qc==1]) if our_n>0 else np.nan))
-            r("Max value", float(np.nanmax(gt_v)), float(np.nanmax(our_v[our_qc==1]) if our_n>0 else np.nan))
+        if gt_ok and np.any(np.isfinite(gt_v)):
+            our_good = our_v[our_qc == 1] if our_n > 0 else np.array([np.nan])
+            r("Min value", float(np.nanmin(gt_v)), float(np.nanmin(our_good)))
+            r("Max value", float(np.nanmax(gt_v)), float(np.nanmax(our_good)))
 
-            # Agreement at common good points
-            n_min = min(len(gt_v), len(our_v))
-            common = np.isfinite(gt_v[:n_min]) & ((our_qc[:n_min] == 1) if our_qc is not None else True)
-            if np.sum(common) > 1000:
-                d = gt_v[:n_min][common] - our_v[:n_min][common]
-                r("Mean diff GT−Ours", float(np.mean(d)), 0.0)
-                r("Std  diff GT−Ours", float(np.std(d)),  0.0)
-                thresh = 0.01 if "temp" in var_name or "sal" in var_name else 1.0
-                agree  = 100 * float(np.mean(np.abs(d) < thresh))
-                w(f"  Agreement within {thresh}: {agree:.1f}% of co-located good points")
+            # ---- Agreement, on genuinely co-located samples only ----
+            if not aligned:
+                w("  Agreement: not computed (no shared timestamps)")
+            else:
+                gt_c  = gt_v[i0]                 # GT result at shared times
+                our_c = l1_cmp[var_name].values  # our L1 value at the same times
+                qc_c  = (l1_cmp[qc_name].values.astype(int)
+                         if qc_name in l1_cmp else None)
+
+                common = np.isfinite(gt_c) & np.isfinite(our_c)
+                if qc_c is not None:
+                    common &= (qc_c == 1)
+                n_pairs = int(np.sum(common))
+
+                if n_pairs >= 100:
+                    d = gt_c[common] - our_c[common]
+                    thresh = 0.01 if ("temp" in var_name or "sal" in var_name) else 1.0
+                    agree = 100 * float(np.mean(np.abs(d) < thresh))
+                    w(f"  Co-located good pairs:  {n_pairs:,}")
+                    w(f"  Mean diff (GT − ours):  {float(np.mean(d)):+.5f}")
+                    w(f"  Std  diff (GT − ours):  {float(np.std(d)):.5f}")
+                    w(f"  Agreement within {thresh}:   {agree:.1f}% of those pairs")
+                else:
+                    w(f"  Agreement: not computed "
+                      f"(only {n_pairs:,} co-located good pairs, need 100)")
         w()
 
     # Feature comparison table

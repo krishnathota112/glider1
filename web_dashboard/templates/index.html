@@ -1,0 +1,1684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INCOIS Glider Real-Time Quality Control (RTQC) Dashboard</title>
+    <meta name="description" content="Interactive visualization of INCOIS Slocum glider telemetry data quality control processing chain, ARGO QC flag cascades, and oceanographic section outcomes.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- CSS Reset and Custom Styles -->
+    <style>
+        :root {
+            --bg-main: #0b0e14;
+            --bg-card: rgba(22, 28, 45, 0.4);
+            --bg-card-hover: rgba(22, 28, 45, 0.65);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-accent: rgba(0, 242, 254, 0.15);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --accent-cyan: #00f2fe;
+            --accent-blue: #4facfe;
+            --accent-purple: #9b51e0;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --font-outfit: 'Outfit', sans-serif;
+            --font-inter: 'Inter', sans-serif;
+            --glow: 0 0 20px rgba(0, 242, 254, 0.25);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            font-family: var(--font-inter);
+            overflow-x: hidden;
+            line-height: 1.5;
+        }
+
+        /* Ambient glowing background blobs */
+        .ambient-glow-1 {
+            position: absolute;
+            top: -10%;
+            left: -10%;
+            width: 50%;
+            height: 60%;
+            background: radial-gradient(circle, rgba(0, 242, 254, 0.04) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .ambient-glow-2 {
+            position: absolute;
+            bottom: -10%;
+            right: -10%;
+            width: 50%;
+            height: 60%;
+            background: radial-gradient(circle, rgba(155, 81, 224, 0.03) 0%, transparent 70%);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        /* Container Layout */
+        .app-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Dashboard Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-outfit);
+            font-weight: 800;
+            font-size: 1.5rem;
+            color: #000;
+            box-shadow: var(--glow);
+        }
+
+        .logo-text h1 {
+            font-family: var(--font-outfit);
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #ffffff, #cfd9df);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-text p {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            letter-spacing: 0.05em;
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .status-pill {
+            background-color: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--accent-green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Sidebar & Main Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 360px 1fr;
+            gap: 2rem;
+            align-items: start;
+        }
+
+        @media (max-width: 1200px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Glassmorphism Card style */
+        .glass-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-card:hover {
+            border-color: var(--border-accent);
+            box-shadow: 0 10px 30px rgba(0, 242, 254, 0.03);
+        }
+
+        /* Section Headings */
+        .section-title {
+            font-family: var(--font-outfit);
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-left: 3px solid var(--accent-cyan);
+            padding-left: 0.75rem;
+        }
+
+        /* List Sections Toggles */
+        .list-tab-container {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            padding: 0.25rem;
+        }
+
+        .list-tab {
+            flex: 1;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            padding: 0.4rem;
+            cursor: pointer;
+            border-radius: 6px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .list-tab.active {
+            background: var(--bg-card);
+            color: var(--accent-cyan);
+            border: 1px solid var(--border-color);
+        }
+
+        /* Glider Select List */
+        .transect-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            max-height: 380px;
+            overflow-y: auto;
+            padding-right: 0.25rem;
+        }
+
+        /* Scrollbar customization */
+        .transect-list::-webkit-scrollbar {
+            width: 4px;
+        }
+        .transect-list::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 2px;
+        }
+
+        .transect-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+
+        .transect-card:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(0, 242, 254, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .transect-card.active {
+            background: linear-gradient(135deg, rgba(79, 172, 254, 0.15) 0%, rgba(0, 242, 254, 0.15) 100%);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 4px 20px rgba(0, 242, 254, 0.1);
+        }
+
+        .transect-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .transect-id {
+            font-family: var(--font-outfit);
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: #ffffff;
+        }
+
+        .transect-status {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .transect-status.processed {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+        }
+
+        .transect-status.unprocessed {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-orange);
+        }
+
+        .transect-status.running {
+            background: rgba(79, 172, 254, 0.15);
+            color: var(--accent-blue);
+            animation: text-pulse 1.5s infinite alternate;
+        }
+
+        @keyframes text-pulse {
+            from { opacity: 0.6; }
+            to { opacity: 1; }
+        }
+
+        .transect-meta-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+
+        /* Pipeline Visual Steps */
+        .pipeline-steps {
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            padding-left: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .pipeline-steps::before {
+            content: '';
+            position: absolute;
+            left: 5px;
+            top: 5px;
+            bottom: 5px;
+            width: 2px;
+            background: var(--border-color);
+        }
+
+        .step-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+            cursor: pointer;
+        }
+
+        .step-item:last-child {
+            padding-bottom: 0;
+        }
+
+        .step-node {
+            position: absolute;
+            left: -20px;
+            top: 4px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #272a37;
+            border: 2px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .step-item:hover .step-node {
+            background: var(--accent-cyan);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 10px var(--accent-cyan);
+        }
+
+        .step-item.active .step-node {
+            background: var(--accent-blue);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 12px var(--accent-cyan);
+        }
+
+        .step-item.active::before {
+            content: '';
+            position: absolute;
+            left: -20px;
+            top: 4px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent-cyan);
+            transform: scale(1.6);
+            opacity: 0.3;
+            animation: ping 1.5s infinite;
+        }
+
+        .step-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            transition: color 0.2s ease;
+        }
+
+        .step-item:hover .step-title,
+        .step-item.active .step-title {
+            color: var(--accent-cyan);
+        }
+
+        .step-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.15rem;
+        }
+
+        /* Pipeline Step Details Box */
+        .step-info-box {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-top: 1.25rem;
+        }
+
+        .step-info-header {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        .step-info-detail {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* Main Workspace Contents */
+        .main-workspace {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Summary Stats Cards Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 900px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-value {
+            font-family: var(--font-outfit);
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .stat-subtext {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* Visualization / Gallery Grid */
+        .viz-container {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1400px) {
+            .viz-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Plot Viewer Panel */
+        .plot-viewer-card {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .plot-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+
+        .filter-btn {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 0.4rem 0.85rem;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 500;
+        }
+
+        .filter-btn:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #ffffff;
+        }
+
+        .filter-btn.active {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            color: #000000;
+            border-color: transparent;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.15);
+        }
+
+        .image-frame {
+            background: #06080c;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            min-height: 480px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+            cursor: zoom-in;
+        }
+
+        .image-frame img {
+            max-width: 100%;
+            max-height: 640px;
+            object-fit: contain;
+            transition: transform 0.3s ease;
+        }
+
+        .image-frame:hover img {
+            transform: scale(1.01);
+        }
+
+        .image-loader {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 242, 254, 0.1);
+            border-top-color: var(--accent-cyan);
+            border-radius: 50%;
+            animation: spin 1s infinite linear;
+            display: none;
+        }
+
+        .plot-caption {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.25rem;
+        }
+
+        .plot-info h3 {
+            font-family: var(--font-outfit);
+            font-size: 1.1rem;
+            color: #ffffff;
+        }
+
+        .plot-info p {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.15rem;
+        }
+
+        .zoom-tip {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        /* Thumbnails Slider Gallery */
+        .thumbnails-gallery {
+            display: flex;
+            gap: 0.75rem;
+            overflow-x: auto;
+            padding-bottom: 0.75rem;
+            scroll-behavior: smooth;
+        }
+
+        .thumbnails-gallery::-webkit-scrollbar {
+            height: 6px;
+        }
+        .thumbnails-gallery::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        .thumb-item {
+            width: 100px;
+            height: 70px;
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+            overflow: hidden;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+            background: #000;
+        }
+
+        .thumb-item:hover {
+            border-color: rgba(0, 242, 254, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .thumb-item.active {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 10px rgba(0, 242, 254, 0.3);
+        }
+
+        .thumb-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.6;
+            transition: opacity 0.2s ease;
+        }
+
+        .thumb-item.active img, .thumb-item:hover img {
+            opacity: 1;
+        }
+
+        /* Variable QC Flags Table Panel */
+        .qc-panel-card {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .qc-table-wrapper {
+            margin-top: 1rem;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+            text-align: left;
+        }
+
+        th {
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 0.75rem 0.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        td {
+            padding: 0.75rem 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+        }
+
+        tr:hover td {
+            background-color: rgba(255, 255, 255, 0.01);
+        }
+
+        .var-name {
+            font-weight: 600;
+            color: #ffffff;
+        }
+
+        /* QC Flag Mini progress bars */
+        .qc-bar-container {
+            width: 100%;
+            height: 6px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+            margin-top: 0.25rem;
+        }
+
+        .qc-bar-segment {
+            height: 100%;
+        }
+
+        .qc-bar-segment.good { background-color: var(--accent-green); }
+        .qc-bar-segment.pbad { background-color: var(--accent-orange); }
+        .qc-bar-segment.bad { background-color: var(--accent-red); }
+        .qc-bar-segment.miss { background-color: var(--text-muted); }
+
+        .flag-legend {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+            font-size: 0.75rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            color: var(--text-secondary);
+        }
+
+        .legend-color {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+
+        /* Active Processing Console Area */
+        .processing-workspace {
+            display: none;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        .console-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .console-title h2 {
+            font-family: var(--font-outfit);
+            font-size: 1.5rem;
+            color: #ffffff;
+        }
+
+        .console-title p {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .process-btn {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            color: #000000;
+            border: none;
+            padding: 0.75rem 2rem;
+            border-radius: 8px;
+            font-family: var(--font-outfit);
+            font-weight: 700;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.25s ease;
+            box-shadow: var(--glow);
+        }
+
+        .process-btn:hover {
+            transform: translateY(-2px);
+            opacity: 0.95;
+        }
+
+        .process-btn:disabled {
+            background: #272a37;
+            color: var(--text-muted);
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+
+        .console-progress-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+
+        .progress-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 12px;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+            width: 0%;
+            transition: width 0.4s ease;
+            box-shadow: 0 0 10px rgba(0, 242, 254, 0.5);
+        }
+
+        .terminal-console {
+            background-color: #05070a;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            color: #00f2fe;
+            height: 480px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.9);
+            line-height: 1.4;
+            letter-spacing: 0.02em;
+        }
+
+        .terminal-console::-webkit-scrollbar {
+            width: 6px;
+        }
+        .terminal-console::-webkit-scrollbar-thumb {
+            background: rgba(0, 242, 254, 0.2);
+            border-radius: 3px;
+        }
+
+        /* Lightbox overlay for full plot view */
+        .lightbox-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(5, 7, 10, 0.95);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+
+        .lightbox-content {
+            position: relative;
+            max-width: 95%;
+            max-height: 95%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .lightbox-img {
+            max-width: 100%;
+            max-height: 85vh;
+            object-fit: contain;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        .lightbox-title {
+            color: #ffffff;
+            font-family: var(--font-outfit);
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .lightbox-close {
+            position: absolute;
+            top: -2rem;
+            right: 0;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.75rem;
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+
+        .lightbox-close:hover {
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ambient-glow-1"></div>
+    <div class="ambient-glow-2"></div>
+
+    <div class="app-container">
+        
+        <!-- Header -->
+        <header>
+            <div class="logo-area">
+                <div class="logo-icon">Q</div>
+                <div class="logo-text">
+                    <h1>Glider RTQC Explorer</h1>
+                    <p>INCOIS TELEMETRY DATA PROCESSING & QUALITY CONTROL</p>
+                </div>
+            </div>
+            
+            <div class="system-status">
+                <div class="status-pill">
+                    <div class="status-dot"></div>
+                    <span>System Online</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Grid Layout -->
+        <div class="dashboard-grid">
+            
+            <!-- Left Side: Navigation & Steps -->
+            <div style="display: flex; flex-direction: column; gap: 2rem;">
+                
+                <!-- Card 1: Glider Transect Selector -->
+                <div class="glass-card">
+                    <div class="section-title">
+                        <span>Glider Transects</span>
+                    </div>
+
+                    <div class="list-tab-container">
+                        <button class="list-tab active" id="tab-processed">Processed</button>
+                        <button class="list-tab" id="tab-unprocessed">New / Raw</button>
+                    </div>
+
+                    <div class="transect-list" id="transect-list-container">
+                        <!-- Dynamic Transect Cards will be loaded here -->
+                        <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                            Loading transects...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Card 2: Interactive Processing Steps -->
+                <div class="glass-card" id="steps-card">
+                    <div class="section-title">
+                        <span>QC Pipeline Chain</span>
+                    </div>
+                    
+                    <div class="pipeline-steps" id="pipeline-steps-container">
+                        <div class="step-item active" data-step="1">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 1: Raw Data Sync</div>
+                            <div class="step-desc">Merge flight (.dbd) & science (.ebd) binary timeseries</div>
+                        </div>
+                        
+                        <div class="step-item" data-step="2">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 2: Physics & Optics QC</div>
+                            <div class="step-desc">Despike, dark corrections, and range limit checks</div>
+                        </div>
+
+                        <div class="step-item" data-step="3">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 3: Profiles Splitting</div>
+                            <div class="step-desc">Isolate individual descent & ascent vertical profiles</div>
+                        </div>
+
+                        <div class="step-item" data-step="4">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 4: Grid Averaging</div>
+                            <div class="step-desc">Bin raw profiles into uniform 1-meter depth grid</div>
+                        </div>
+
+                        <div class="step-item" data-step="5">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 5: Grid Visualizations</div>
+                            <div class="step-desc">Generate raw L0 vs clean L1 contour matrices</div>
+                        </div>
+
+                        <div class="step-item" data-step="6">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 6: Diagnostic Analysis</div>
+                            <div class="step-desc">Produce GPS tracks, TS diagrams, and anomaly reports</div>
+                        </div>
+
+                        <div class="step-item" data-step="7">
+                            <div class="step-node"></div>
+                            <div class="step-title">Step 7: Oceanographic Sections</div>
+                            <div class="step-desc">Plot physical, optical & density profile envelopes</div>
+                        </div>
+                    </div>
+
+                    <!-- Step details box -->
+                    <div class="step-info-box" id="step-info-box">
+                        <div class="step-info-header" id="step-info-title">Step 1 Details</div>
+                        <div class="step-info-detail" id="step-info-content">
+                            Synchronizes flight telemetry and scientific variables onto a uniform science time axis, establishing L0 NetCDF. Rejects bad timestamps outside deployment date limits.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Side: Main Workspace Area -->
+            <div>
+                
+                <!-- 1. Processing Workspace Console Panel (Hidden by default, shown for unprocessed/running gliders) -->
+                <div class="processing-workspace" id="processing-console-workspace">
+                    <div class="glass-card">
+                        <div class="console-header">
+                            <div class="console-title">
+                                <h2 id="process-glider-title">Glider 1130</h2>
+                                <p id="process-glider-subtitle">Status: Ready to process</p>
+                            </div>
+                            <button class="process-btn" id="btn-start-process">Run Pipeline</button>
+                        </div>
+                    </div>
+
+                    <div class="glass-card console-progress-container" id="process-progress-box" style="display: none;">
+                        <div class="progress-bar-label">
+                            <span id="progress-status-text">Synchronizing L0 binary timeseries...</span>
+                            <span id="progress-percent">20%</span>
+                        </div>
+                        <div class="progress-bar-track">
+                            <div class="progress-bar-fill" id="progress-bar-fill"></div>
+                        </div>
+                    </div>
+
+                    <div class="glass-card" style="padding: 1rem;">
+                        <div style="font-family: var(--font-outfit); font-size: 1.05rem; font-weight: 600; margin-bottom: 0.75rem; color: #ffffff; display: flex; align-items: center; gap: 0.5rem;">
+                            <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: var(--accent-cyan);"></span>
+                            <span>Live Execution Terminal Logs</span>
+                        </div>
+                        <div class="terminal-console" id="terminal-console-output">Waiting to execute...</div>
+                    </div>
+                </div>
+
+                <!-- 2. Main Processing Visualizations Workspace (Shown for processed gliders) -->
+                <div class="main-workspace" id="visualizations-workspace">
+                    
+                    <!-- Top Metric Stats (changes dynamically) -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">L0 Observations</div>
+                            <div class="stat-value" id="stat-obs">-</div>
+                            <div class="stat-subtext" id="stat-duration">Duration: -</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">L1 Profiles</div>
+                            <div class="stat-value" id="stat-profiles">-</div>
+                            <div class="stat-subtext" id="stat-retention">Retention: -</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Max Depth</div>
+                            <div class="stat-value" id="stat-depth">-</div>
+                            <div class="stat-subtext" id="stat-track">Distance: -</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">NetCDF Size</div>
+                            <div class="stat-value" id="stat-size">-</div>
+                            <div class="stat-subtext" id="stat-grid-size">Grid Size: -</div>
+                        </div>
+                    </div>
+
+                    <!-- Mid layout: Plot Viewer & QC Flags Details -->
+                    <div class="viz-container">
+                        
+                        <!-- Plot Viewer Card -->
+                        <div class="glass-card plot-viewer-card" style="grid-column: 1;">
+                            <div class="plot-filters" id="plot-filters-container">
+                                <button class="filter-btn active" data-filter="all">All Outcomes</button>
+                                <button class="filter-btn" data-filter="diagnostic">Diagnostics & Track</button>
+                                <button class="filter-btn" data-filter="section">Contour Sections</button>
+                                <button class="filter-btn" data-filter="summary">Overview Panels</button>
+                            </div>
+                            
+                            <div class="image-frame" id="main-image-frame">
+                                <div class="image-loader" id="image-loader"></div>
+                                <img src="" alt="Selected Outcome Plot" id="main-plot-img">
+                            </div>
+                            
+                            <div class="plot-caption">
+                                <div class="plot-info">
+                                    <h3 id="current-plot-title">Plot Title</h3>
+                                    <p id="current-plot-desc">Details of the active plot visualization.</p>
+                                </div>
+                                <div class="zoom-tip">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+                                    <span>Click image to expand</span>
+                                </div>
+                            </div>
+
+                            <!-- Gallery Thumbnails Carousel -->
+                            <div class="thumbnails-gallery" id="thumbnails-gallery-container">
+                                <!-- Thumbnails dynamically rendered -->
+                            </div>
+                        </div>
+
+                        <!-- QC Flags Card -->
+                        <div class="glass-card qc-panel-card">
+                            <div class="section-title">
+                                <span>L1 Variable QC Summary</span>
+                            </div>
+                            <p style="font-size: 0.75rem; color: var(--text-secondary); margin-top: -0.5rem;">
+                                Proportion of data points flagged by ARGO & GliderTools tests.
+                            </p>
+                            
+                            <div class="qc-table-wrapper">
+                                <table>
+                                   <thead>
+                                       <tr>
+                                           <th>Variable</th>
+                                           <th>Stats (%)</th>
+                                       </tr>
+                                   </thead>
+                                   <tbody id="qc-table-body">
+                                       <!-- Table rows dynamically populated -->
+                                   </tbody>
+                                </table>
+                            </div>
+
+                            <div class="flag-legend">
+                                <div class="legend-item">
+                                    <div class="legend-color" style="background-color: var(--accent-green);"></div>
+                                    <span>Good (1,2)</span>
+                                </div>
+                                <div class="legend-item">
+                                    <div class="legend-color" style="background-color: var(--accent-orange);"></div>
+                                    <span>Prob. Bad (3)</span>
+                                </div>
+                                <div class="legend-item">
+                                    <div class="legend-color" style="background-color: var(--accent-red);"></div>
+                                    <span>Bad (4)</span>
+                                </div>
+                                <div class="legend-item">
+                                    <div class="legend-color" style="background-color: var(--text-muted);"></div>
+                                    <span>Missing (9)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Lightbox Overlay -->
+    <div class="lightbox-overlay" id="lightbox">
+        <div class="lightbox-content">
+            <button class="lightbox-close" id="lightbox-close">&times;</button>
+            <h3 class="lightbox-title" id="lightbox-title">Expanded View</h3>
+            <img src="" alt="Expanded Plot View" class="lightbox-img" id="lightbox-img">
+        </div>
+    </div>
+
+    <!-- JavaScript logic -->
+    <script>
+        // Pipeline details dictionary
+        const PIPELINE_STEPS_INFO = {
+            1: {
+                title: "Step 1: Raw Data Sync",
+                content: "Synchronizes flight telemetry (.dbd) and scientific (.ebd) binary timeseries variables onto a uniform science timestamp axis, establishing L0 NetCDF files. Rejects bad timestamps outside the plausible deployment date limits to prevent database conversion overflow."
+            },
+            2: {
+                title: "Step 2: Physics & Optics QC",
+                content: "Applies GliderTools-style physical filters (temperature and pressure range cleaning) and optical filters (chlorophyll dark counts, CDOM spikes, backscatter Zhang corrections). Afterwards, runs standard ARGO flag checks (Impossible Speed, Global Range, Stuck Values, Spike Tests, Sensor Drift) to assign quality control flags."
+            },
+            3: {
+                title: "Step 3: Profiles Splitting",
+                content: "Identifies dive vertical directions and splits the continuous L1 timeseries into discrete vertical profiles (ascents and descents) based on depth turning points. Outputs profile index numbers and direction codes for each datapoint."
+            },
+            4: {
+                title: "Step 4: Grid Averaging",
+                content: "Grids the irregular profile coordinates into uniform 1-meter depth bins. Averaging only uses datapoints flagged with good quality (QC flags 1 & 2), creating the grid NetCDF dataset used for section analysis."
+            },
+            5: {
+                title: "Step 5: Grid Visualizations",
+                content: "Generates time-depth section gridplots for the L0 (raw, unfiltered) and L1 (QC flag 1 & 2 only) datasets, revealing the gaps in data coverage and highlighting variables like temperature, salinity, oxygen, and chlorophyll."
+            },
+            6: {
+                title: "Step 6: Diagnostic Analysis",
+                content: "Produces detailed summaries, comparison lists, and diagnostics: a GPS surface track map, a Temperature-Salinity diagram, data completeness diagrams, and checks for sudden spatial GPS jumps."
+            },
+            7: {
+                title: "Step 7: Oceanographic Sections",
+                content: "Creates oceanographic section contours (temperature, salinity, oxygen, optical properties, density), vertical gradients (thermocline/halocline tracking), anomalies (Hovmöller sections), and average envelope structures."
+            }
+        };
+
+        // Plot categorizations
+        const PLOT_INFO_MAP = {
+            'track': { title: 'GPS Surface Track Map', desc: 'Displays the glider coordinate path, showing start/end points, Arabian Sea boundaries, and GPS jumps.', category: 'diagnostic' },
+            'ts_diagram': { title: 'T-S Diagram', desc: 'Plots Temperature against Salinity with isopycnal (density) contour overlays, colored by depth.', category: 'diagnostic' },
+            'ts_density': { title: 'T-S Density Diagram', desc: 'T-S diagram with density contours overlaid, highlighting water mass characteristics.', category: 'diagnostic' },
+            'data_coverage': { title: 'Sensor Data Coverage Matrix', desc: 'Visualization of valid data points captured per sensor over the active duration of the deployment.', category: 'diagnostic' },
+            'profiles_envelope': { title: 'Profile Property Envelopes', desc: 'Min, max, median, and IQR vertical envelopes showing variation of temperature, salinity, and oxygen with depth.', category: 'diagnostic' },
+            'L0_gridplot': { title: 'Raw (L0) Time-Depth Section', desc: 'Unfiltered timeseries gridded contour mapping. Contains raw sensor anomalies, spikes, and bad data.', category: 'section' },
+            'L1_gridplot': { title: 'Clean (L1) Time-Depth Section', desc: 'Gridded contour mapping filtering only valid data points (QC flags 1 & 2). Extraneous spikes are removed.', category: 'section' },
+            'contour_temp': { title: 'Temperature Contour Section', desc: 'Filled 2D contour profile tracking vertical thermal properties over the glider transect.', category: 'section' },
+            'contour_salinity': { title: 'Salinity Contour Section', desc: 'Filled 2D contour profile showing salinity changes and halocline structure over the glider transect.', category: 'section' },
+            'contour_oxygen': { title: 'Oxygen Concentration Section', desc: 'Profile showing dissolved oxygen levels, highlighting low-oxygen zones.', category: 'section' },
+            'contour_optics': { title: 'Optical Properties Section', desc: 'Three-panel section detailing chlorophyll concentration, CDOM levels, and backscatter coefficients.', category: 'section' },
+            'contour_density': { title: 'Potential Density Contour Section', desc: 'Vertical stratification section mapping potential density anomalies over the deployment.', category: 'section' },
+            'surface_properties': { title: 'Surface properties timeseries', desc: 'Timeseries plots for SST, SSS, surface oxygen, and chlorophyll average values in the top 15 m.', category: 'section' },
+            'depth_timeseries': { title: 'Isotherm Depth Timeseries', desc: 'Tracks the vertical movement of specific temperature and density layers (isotherms/isopycnals) over time.', category: 'section' },
+            'hovmoller': { title: 'Hovmöller Temperature Anomaly', desc: 'Section showing temperature anomalies (climatological average subtracted) over time and depth.', category: 'section' },
+            'vertical_gradient': { title: 'Vertical Gradients Section', desc: 'Maps vertical gradient rates of change (dT/dz and dS/dz) detailing the thermocline and halocline depth layers.', category: 'section' },
+            'overview_section': { title: 'Overview Summary Section', desc: '5-panel stacked section mapping temperature, salinity, oxygen, chlorophyll, and potential density outcomes.', category: 'summary' }
+        };
+
+        // State variables
+        let transectData = [];
+        let activeTransect = null;
+        let activePlotFilename = null;
+        let activeCategoryFilter = 'all';
+        let activeListTab = 'processed'; // 'processed' or 'unprocessed'
+        let statusPollInterval = null;
+
+        // Load data on page load
+        document.addEventListener("DOMContentLoaded", () => {
+            fetchTransects(true);
+            setupEventListeners();
+        });
+
+        // Fetch data from Flask API
+        function fetchTransects(selectFirst = false) {
+            fetch('/api/transects')
+                .then(res => res.json())
+                .then(data => {
+                    transectData = data;
+                    renderTransectsList();
+                    
+                    if (selectFirst && transectData.length > 0) {
+                        // find first processed transect
+                        const processed = transectData.find(t => t.status === 'processed');
+                        if (processed) {
+                            selectTransect(processed);
+                        } else {
+                            selectTransect(transectData[0]);
+                        }
+                    } else if (activeTransect) {
+                        // maintain active transect selection if still available
+                        const current = transectData.find(t => t.folder_name === activeTransect.folder_name);
+                        if (current) selectTransect(current);
+                    }
+                })
+                .catch(err => {
+                    console.error("Error loading transects:", err);
+                    document.getElementById("transect-list-container").innerHTML = 
+                        `<div style="text-align: center; padding: 2rem; color: var(--accent-red);">Failed to load glider transects.</div>`;
+                });
+        }
+
+        // Render Sidebar Transects (Filtered by processed vs unprocessed tab)
+        function renderTransectsList() {
+            const container = document.getElementById("transect-list-container");
+            container.innerHTML = "";
+            
+            const filteredList = transectData.filter(t => {
+                if (activeListTab === 'processed') {
+                    return t.status === 'processed';
+                } else {
+                    return t.status !== 'processed'; // unprocessed, running, completed, failed
+                }
+            });
+
+            if (filteredList.length === 0) {
+                container.innerHTML = `<div style="text-align: center; padding: 2rem; color: var(--text-muted); font-size: 0.8rem;">No ${activeListTab} transects found.</div>`;
+                return;
+            }
+
+            filteredList.forEach(t => {
+                const card = document.createElement("div");
+                card.className = `transect-card ${activeTransect && activeTransect.folder_name === t.folder_name ? 'active' : ''}`;
+                card.onclick = () => selectTransect(t);
+                
+                const meta = t.metadata;
+                const obs = meta.l0 ? parseInt(meta.l0.observations).toLocaleString() : 'N/A';
+                const duration = meta.l0 ? meta.l0.duration : 'N/A';
+                const maxDepth = meta.l0 ? meta.l0.max_depth : 'N/A';
+
+                let statusLabel = t.status;
+                if (t.status === 'running') statusLabel = 'Processing';
+                if (t.status === 'completed') statusLabel = 'Finished';
+
+                card.innerHTML = `
+                    <div class="transect-header">
+                        <span class="transect-id">${meta.glider_id || t.folder_name}</span>
+                        <span class="transect-status ${t.status}">${statusLabel}</span>
+                    </div>
+                    ${t.status === 'processed' ? `
+                    <div class="transect-meta-row">
+                        <span>Obs: ${obs}</span>
+                        <span>Dur: ${duration}</span>
+                    </div>
+                    <div class="transect-meta-row">
+                        <span>Max Depth: ${maxDepth}</span>
+                    </div>
+                    ` : `
+                    <div class="transect-meta-row" style="margin-top: 0.50rem;">
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">Unprocessed Binary Folders</span>
+                    </div>
+                    `}
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // Handle Active Selection
+        function selectTransect(transect) {
+            activeTransect = transect;
+            renderTransectsList(); // update active card highlights
+            
+            // Clean up old polling intervals
+            if (statusPollInterval) {
+                clearInterval(statusPollInterval);
+                statusPollInterval = null;
+            }
+
+            if (transect.status === 'processed') {
+                // Show visualizations workspace, hide console
+                document.getElementById("visualizations-workspace").style.display = "flex";
+                document.getElementById("processing-console-workspace").style.display = "none";
+                document.getElementById("steps-card").style.display = "block";
+
+                // Update stats
+                const meta = transect.metadata;
+                document.getElementById("stat-obs").innerText = meta.l0 ? parseInt(meta.l0.observations).toLocaleString() : '-';
+                document.getElementById("stat-duration").innerText = meta.l0 ? `Duration: ${meta.l0.duration}` : 'Duration: -';
+                
+                document.getElementById("stat-profiles").innerText = meta.l1 ? `${meta.l1.profiles}` : '-';
+                document.getElementById("stat-retention").innerText = meta.l1 ? `Retention: ${meta.l1.profile_retention}` : 'Retention: -';
+                
+                document.getElementById("stat-depth").innerText = meta.l0 ? meta.l0.max_depth : '-';
+                document.getElementById("stat-track").innerText = meta.l0 ? `Distance: ${meta.l0.track_dist}` : 'Distance: -';
+                
+                document.getElementById("stat-size").innerText = meta.l1 ? meta.l1.size : '-';
+                document.getElementById("stat-grid-size").innerText = meta.grid ? `Grid Size: ${meta.grid.size}` : 'Grid Size: -';
+
+                // Populate QC flag table
+                populateQCTable();
+
+                // Set default/first plot
+                if (transect.plots.length > 0) {
+                    const match = transect.plots.find(p => getPlotCategory(p) === activeCategoryFilter || activeCategoryFilter === 'all');
+                    selectPlot(match || transect.plots[0]);
+                } else {
+                    clearPlotViewer();
+                }
+
+                // Populate thumbnails
+                renderThumbnails();
+            } else {
+                // Unprocessed, running, completed, or failed
+                document.getElementById("visualizations-workspace").style.display = "none";
+                document.getElementById("processing-console-workspace").style.display = "flex";
+                document.getElementById("steps-card").style.display = "none";
+
+                // Set console UI values
+                document.getElementById("process-glider-title").innerText = `Glider Transect ${transect.folder_name}`;
+                updateConsoleUI();
+
+                if (transect.status === 'running') {
+                    startPollingStatus();
+                }
+            }
+        }
+
+        // Helper to check plot category
+        function getPlotCategory(filename) {
+            for (const key in PLOT_INFO_MAP) {
+                if (filename.includes(key)) {
+                    return PLOT_INFO_MAP[key].category;
+                }
+            }
+            return 'diagnostic';
+        }
+
+        // Get details of a plot
+        function getPlotDetails(filename) {
+            for (const key in PLOT_INFO_MAP) {
+                if (filename.includes(key)) {
+                    return PLOT_INFO_MAP[key];
+                }
+            }
+            return { title: filename, desc: 'Processing outcome visualization plot.', category: 'diagnostic' };
+        }
+
+        // Select Plot
+        function selectPlot(filename) {
+            activePlotFilename = filename;
+            
+            document.querySelectorAll('.thumb-item').forEach(item => {
+                if (item.dataset.filename === filename) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+
+            const img = document.getElementById("main-plot-img");
+            const loader = document.getElementById("image-loader");
+            
+            loader.style.display = "block";
+            img.style.opacity = "0.5";
+            
+            img.src = `/plots/${activeTransect.folder_name}/${filename}`;
+            img.onload = () => {
+                loader.style.display = "none";
+                img.style.opacity = "1";
+            };
+
+            const details = getPlotDetails(filename);
+            document.getElementById("current-plot-title").innerText = details.title;
+            document.getElementById("current-plot-desc").innerText = details.desc;
+        }
+
+        // Render thumbnails
+        function renderThumbnails() {
+            const container = document.getElementById("thumbnails-gallery-container");
+            container.innerHTML = "";
+
+            const filteredPlots = activeTransect.plots.filter(p => {
+                if (activeCategoryFilter === 'all') return true;
+                return getPlotCategory(p) === activeCategoryFilter;
+            });
+
+            filteredPlots.forEach(plot => {
+                const thumb = document.createElement("div");
+                thumb.className = `thumb-item ${activePlotFilename === plot ? 'active' : ''}`;
+                thumb.dataset.filename = plot;
+                thumb.onclick = () => selectPlot(plot);
+
+                const imgUrl = `/plots/${activeTransect.folder_name}/${plot}`;
+                thumb.innerHTML = `<img src="${imgUrl}" alt="Thumbnail">`;
+                container.appendChild(thumb);
+            });
+        }
+
+        // Populate Variable QC Flag summary table
+        function populateQCTable() {
+            const tbody = document.getElementById("qc-table-body");
+            tbody.innerHTML = "";
+            
+            const meta = activeTransect.metadata;
+            if (!meta.l1 || !meta.l1.qc_flags || meta.l1.qc_flags.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-muted); padding: 2rem;">No QC summary stats table available.</td></tr>`;
+                return;
+            }
+
+            meta.l1.qc_flags.forEach(flag => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td>
+                        <div class="var-name">${flag.variable}</div>
+                        <div class="qc-bar-container">
+                            <div class="qc-bar-segment good" style="width: ${flag.good}%" title="Good: ${flag.good}%"></div>
+                            <div class="qc-bar-segment pbad" style="width: ${flag.pbad}%" title="Prob. Bad: ${flag.pbad}%"></div>
+                            <div class="qc-bar-segment bad" style="width: ${flag.bad}%" title="Bad: ${flag.bad}%"></div>
+                            <div class="qc-bar-segment miss" style="width: ${flag.miss}%" title="Missing: ${flag.miss}%"></div>
+                        </div>
+                    </td>
+                    <td style="vertical-align: middle; font-family: monospace; text-align: right; font-weight: 500;">
+                        <span style="color: var(--accent-green);">${flag.good}%</span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function clearPlotViewer() {
+            document.getElementById("main-plot-img").src = "";
+            document.getElementById("current-plot-title").innerText = "No outcomes";
+            document.getElementById("current-plot-desc").innerText = "This transect has no plots generated.";
+            document.getElementById("thumbnails-gallery-container").innerHTML = "";
+        }
+
+        // Update active processing console details
+        function updateConsoleUI() {
+            const btn = document.getElementById("btn-start-process");
+            const sub = document.getElementById("process-glider-subtitle");
+            const consoleBox = document.getElementById("process-progress-box");
+            const term = document.getElementById("terminal-console-output");
+
+            if (activeTransect.status === 'unprocessed') {
+                sub.innerText = "Status: Ready to Process";
+                btn.style.display = "block";
+                btn.disabled = false;
+                btn.innerText = "Run Pipeline";
+                consoleBox.style.display = "none";
+                term.innerText = "Ready to start glidertool RTQC processing pipeline...";
+            } else if (activeTransect.status === 'running') {
+                sub.innerText = "Status: Running Pipeline...";
+                btn.style.display = "block";
+                btn.disabled = true;
+                btn.innerText = "Processing...";
+                consoleBox.style.display = "flex";
+            } else if (activeTransect.status === 'completed') {
+                sub.innerText = "Status: Completed Successfully!";
+                btn.style.display = "block";
+                btn.disabled = false;
+                btn.innerText = "Re-run Pipeline";
+                consoleBox.style.display = "none";
+            } else if (activeTransect.status === 'failed') {
+                sub.innerText = "Status: Failed. Check logs below.";
+                btn.style.display = "block";
+                btn.disabled = false;
+                btn.innerText = "Re-run Pipeline";
+                consoleBox.style.display = "none";
+            }
+        }
+
+        // Trigger processing pipeline via backend
+        function startProcessing() {
+            const gliderId = activeTransect.folder_name;
+            document.getElementById("btn-start-process").disabled = true;
+            document.getElementById("btn-start-process").innerText = "Starting...";
+
+            fetch(`/api/process/${gliderId}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    activeTransect.status = 'running';
+                    updateConsoleUI();
+                    startPollingStatus();
+                    // Reload lists to update status badge in sidebar
+                    fetchTransects(false);
+                })
+                .catch(err => {
+                    console.error("Failed to start processing:", err);
+                    alert("Error initiating pipeline execution.");
+                    document.getElementById("btn-start-process").disabled = false;
+                    document.getElementById("btn-start-process").innerText = "Run Pipeline";
+                });
+        }
+
+        // Poll execution status
+        function startPollingStatus() {
+            if (statusPollInterval) clearInterval(statusPollInterval);
+
+            // Immediately poll once
+            pollStatus();
+
+            statusPollInterval = setInterval(pollStatus, 1500);
+        }
+
+        function pollStatus() {
+            const gliderId = activeTransect.folder_name;
+            fetch(`/api/status/${gliderId}`)
+                .then(res => res.json())
+                .then(data => {
+                    // Update log console
+                    const consoleOut = document.getElementById("terminal-console-output");
+                    const wasAtBottom = consoleOut.scrollHeight - consoleOut.clientHeight <= consoleOut.scrollTop + 20;
+                    consoleOut.innerText = data.log || "Executing pipeline...";
+                    if (wasAtBottom) {
+                        consoleOut.scrollTop = consoleOut.scrollHeight;
+                    }
+
+                    // Update progress bar
+                    document.getElementById("process-progress-box").style.display = "flex";
+                    document.getElementById("progress-bar-fill").style.width = `${data.progress}%`;
+                    document.getElementById("progress-percent").innerText = `${data.progress}%`;
+                    
+                    // Set progress text
+                    const statusText = document.getElementById("progress-status-text");
+                    if (data.progress < 20) statusText.innerText = "Synchronizing L0 binary timeseries (Step 1)...";
+                    else if (data.progress < 50) statusText.innerText = "Applying GliderTools physics & optics QC checks (Step 2)...";
+                    else if (data.progress < 65) statusText.innerText = "Splitting continuous coordinates into vertical profiles (Step 3)...";
+                    else if (data.progress < 80) statusText.innerText = "Gridding and binning profile vectors (Step 4)...";
+                    else if (data.progress < 95) statusText.innerText = "Generating time-depth grid sections and TS diagram plots (Step 5/6)...";
+                    else if (data.progress < 100) statusText.innerText = "Constructing oceanographic anomalies and thermocline gradients (Step 7)...";
+                    else statusText.innerText = "Pipeline process completed successfully!";
+
+                    if (data.status !== 'running') {
+                        // Process finished
+                        clearInterval(statusPollInterval);
+                        statusPollInterval = null;
+                        
+                        activeTransect.status = data.status;
+                        updateConsoleUI();
+                        
+                        // Reload data to reflect processed outputs
+                        fetchTransects(false);
+                    }
+                })
+                .catch(err => {
+                    console.error("Error polling process status:", err);
+                });
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            // Processing trigger button
+            document.getElementById("btn-start-process").onclick = () => {
+                startProcessing();
+            };
+
+            // Sidebar tabs (Processed vs Unprocessed)
+            document.getElementById("tab-processed").onclick = () => {
+                document.getElementById("tab-processed").classList.add("active");
+                document.getElementById("tab-unprocessed").classList.remove("active");
+                activeListTab = 'processed';
+                renderTransectsList();
+            };
+
+            document.getElementById("tab-unprocessed").onclick = () => {
+                document.getElementById("tab-processed").classList.remove("active");
+                document.getElementById("tab-unprocessed").classList.add("active");
+                activeListTab = 'unprocessed';
+                renderTransectsList();
+            };
+
+            // Interactive pipeline steps click
+            const steps = document.querySelectorAll(".step-item");
+            steps.forEach(step => {
+                step.onclick = () => {
+                    steps.forEach(s => s.classList.remove("active"));
+                    step.classList.add("active");
+                    
+                    const stepNum = step.dataset.step;
+                    const info = PIPELINE_STEPS_INFO[stepNum];
+                    document.getElementById("step-info-title").innerText = info.title + " Details";
+                    document.getElementById("step-info-content").innerText = info.content;
+                };
+            });
+
+            // Filter button clicks
+            const filterBtns = document.querySelectorAll(".filter-btn");
+            filterBtns.forEach(btn => {
+                btn.onclick = () => {
+                    filterBtns.forEach(b => b.classList.remove("active"));
+                    btn.classList.add("active");
+                    activeCategoryFilter = btn.dataset.filter;
+                    
+                    renderThumbnails();
+                    
+                    const filteredPlots = activeTransect.plots.filter(p => {
+                        if (activeCategoryFilter === 'all') return true;
+                        return getPlotCategory(p) === activeCategoryFilter;
+                    });
+                    if (filteredPlots.length > 0) {
+                        selectPlot(filteredPlots[0]);
+                    } else {
+                        clearPlotViewer();
+                    }
+                };
+            });
+
+            // Lightbox functionality
+            const imageFrame = document.getElementById("main-image-frame");
+            const lightbox = document.getElementById("lightbox");
+            const lightboxImg = document.getElementById("lightbox-img");
+            const lightboxTitle = document.getElementById("lightbox-title");
+            const lightboxClose = document.getElementById("lightbox-close");
+
+            imageFrame.onclick = () => {
+                if (!activePlotFilename) return;
+                lightbox.style.display = "flex";
+                lightboxImg.src = `/plots/${activeTransect.folder_name}/${activePlotFilename}`;
+                const details = getPlotDetails(activePlotFilename);
+                lightboxTitle.innerText = details.title;
+            };
+
+            lightboxClose.onclick = () => {
+                lightbox.style.display = "none";
+            };
+
+            lightbox.onclick = (e) => {
+                if (e.target === lightbox) {
+                    lightbox.style.display = "none";
+                }
+            };
+
+            document.onkeydown = (e) => {
+                if (e.key === "Escape") {
+                    lightbox.style.display = "none";
+                }
+            };
+        }
+    </script>
+</body>
+</html>

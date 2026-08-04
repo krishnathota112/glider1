@@ -94,3 +94,33 @@ if "$PYTHON" -m glider_rtqc.cli --help >/dev/null 2>&1; then
 else
     "$PYTHON" "$PIPELINE_DIR/run_pipeline.py" $DATA_DIR_ARG $L0_ARG $SKIP_ARG
 fi
+
+# ============================================================
+#  Optional final step: load the deployment into SQLite.
+#
+#  Off by default. Enable by setting GLIDER_DB to the database path:
+#    GLIDER_DB=/srv/incois/glider_rtqc.db bash run_pipeline.sh /path/to/data
+#
+#  Safe to re-run — ingestion is idempotent, keyed on a deterministic
+#  hash of (glider_id, timestamp).
+# ============================================================
+if [ -n "${GLIDER_DB:-}" ]; then
+    if [ -n "$1" ]; then
+        OUTPUT_DIR="$1/output"
+    else
+        OUTPUT_DIR="$("$PYTHON" -c \
+            "import sys; sys.path.insert(0,'$PIPELINE_DIR'); \
+             import config; print(config.OUTPUT_DIR)" 2>/dev/null)"
+    fi
+
+    if [ -d "$OUTPUT_DIR" ]; then
+        echo ""
+        echo "Loading deployment into SQLite: $GLIDER_DB"
+        # Don't fail an otherwise-successful pipeline run if ingestion trips.
+        ( cd "$SCRIPT_DIR" && "$PYTHON" -m db.load_deployment \
+            "$OUTPUT_DIR" --db "$GLIDER_DB" ) \
+          || echo "WARNING: database ingestion failed (pipeline output is fine)"
+    else
+        echo "WARNING: GLIDER_DB set but output dir not found: $OUTPUT_DIR"
+    fi
+fi

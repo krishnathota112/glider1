@@ -3,8 +3,11 @@ config.py — Glider processing pipeline configuration.
 
 HOW TO USE
 ----------
-1. Change DATA_DIR to your glider folder (the only line you need to edit).
-2. Run:  python run_pipeline.py
+Point the pipeline at a data folder at runtime — this file needs no edits:
+
+    bash run_pipeline.sh /path/to/your/data
+    python run_pipeline.py --data-dir /path/to/your/data
+    GLIDER_DATA_DIR=/path/to/your/data python run_pipeline.py
 
 Everything else — GPS bounds, deployment year, hemisphere, factory-test
 location, max depth — is auto-detected from the folder contents:
@@ -22,33 +25,62 @@ import glob
 import re
 import numpy as np
 
-# ============================================================
-# DATA_DIR — set your glider data folder here
-DATA_DIR = r"T:\glider_data\1126"
 
-# Linux:    DATA_DIR = "/data/glider/890_2"
-#
-# BETTER: pass it at runtime and never edit this file:
-#   bash run_pipeline.sh /path/to/your/data
-#   python run_pipeline.py --data-dir /path/to/your/data
-#
-# The run_pipeline.sh auto-detects L0-timeseries/ folders
-# and skips binary decoding automatically.
 # ============================================================
-DATA_DIR = os.environ.get(
-    "GLIDER_DATA_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "..", "..")
-)
+# Console encoding
+#
+# Every pipeline step prints characters outside cp1252 (— → ° ³ ±). On a
+# default Windows console those raise UnicodeEncodeError and abort the run
+# mid-step — step6's summary report dies on the '→' in its "Time range"
+# line, after the report file itself was already written.
+#
+# The files are all opened with encoding="utf-8" explicitly, so only the
+# console path is at risk. Every step imports config, so fixing it here
+# covers the whole pipeline, standalone step invocations included.
+# ============================================================
+def _ensure_utf8_console():
+    """Make stdout/stderr tolerate non-ASCII, or degrade instead of crashing."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue    # replaced by something without reconfigure (e.g. StringIO)
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if encoding == "utf8":
+            continue    # already fine — don't touch it
+        try:
+            # errors="replace" is the safety net: a console that genuinely
+            # cannot render a glyph shows a placeholder rather than killing
+            # a multi-hour processing run over a print statement.
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass        # non-reconfigurable stream; nothing further we can do
+
+
+_ensure_utf8_console()
+
+
+# ============================================================
+# DATA_DIR — the glider data folder.
+#
+# Resolution order:
+#   1. --data-dir on the command line (run_pipeline.py exports it into the
+#      environment before importing this module)
+#   2. GLIDER_DATA_DIR in the environment
+#   3. the repo's parent directory, so a checkout sitting inside a deployment
+#      folder still works with no arguments at all
+#
+# run_pipeline.sh auto-detects L0-timeseries/ folders and skips binary
+# decoding automatically.
+# ============================================================
+_DEFAULT_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..")
+
+DATA_DIR = os.path.abspath(
+    os.environ.get("GLIDER_DATA_DIR") or _DEFAULT_DATA_DIR)
 
 # ============================================================
 # Auto-derived paths  (do not edit)
 # ============================================================
-# Allow runtime override via environment variable
-if os.environ.get("GLIDER_DATA_DIR"):
-    DATA_DIR = os.environ["GLIDER_DATA_DIR"]
-
-DATA_DIR    = os.path.abspath(DATA_DIR)
 GLIDER_ID   = os.path.basename(DATA_DIR)
 OUTPUT_DIR  = os.path.join(DATA_DIR, "output")
 CACHE_DIR   = os.path.join(DATA_DIR, "cache")
@@ -502,21 +534,6 @@ def setup_binary_dir():
 # Helpers used by run_pipeline.py
 # ============================================================
 
-def ensure_dirs():
-    """Create all required output directories."""
-    dirs = [
-        OUTPUT_DIR,
-        os.path.join(OUTPUT_DIR, "l1"),
-        os.path.join(OUTPUT_DIR, "profiles"),
-        os.path.join(OUTPUT_DIR, "gridfiles"),
-        os.path.join(OUTPUT_DIR, "plots"),
-        CACHE_DIR,
-    ]
-    for d in dirs:
-        os.makedirs(d, exist_ok=True)
-    return dirs
-
-
 def get_l0_path():
     """
     Find the L0 NetCDF timeseries for this deployment.
@@ -582,10 +599,6 @@ def get_l0_path():
         return attr_l0[0][1]
 
     return p1  # fallback
-
-
-def get_l1_path():
-    return os.path.join(OUTPUT_DIR, "l1", f"incois_glider_{GLIDER_ID}_L1.nc")
 
 
 def print_config():

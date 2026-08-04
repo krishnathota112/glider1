@@ -140,9 +140,29 @@ L0 timeseries
         ├── Test 13: Stuck value detection
         ├── Test 14: Density inversion
         ├── Test 16: Gross sensor drift
+        ├── Test 19: Deepest pressure
         ├── Pressure → all variables cascade
         └── Temperature → salinity cascade
 ```
+
+### Flag precedence
+
+The tests above run in sequence and several of them judge the same variable, so
+the order they run in must not decide the answer. Every write goes through
+`step23._raise_flag`, which enforces two rules:
+
+1. **Worse wins.** `1 < 2 < 3 < 4`. A later test can only make a verdict
+   harsher, never milder. Without this, test 19 (deepest pressure, flag 3) ran
+   after test 6 (global range, flag 4) and downgraded impossible pressures to
+   "probably bad" — after which `pressure_cascade`, which propagates only flag
+   4 and 9, no longer recognised them, and the T/S measured at those pressures
+   kept flag 1.
+2. **Missing is not a verdict.** Flag 9 is never assigned by a test and never
+   overwritten by one. It is set once, at initialisation, from the L0 NaN mask.
+   A test has nothing to say about a value that does not exist — flagging an
+   absent GPS fix "bad" misreports normal glider behaviour as a sensor fault.
+
+`tests/test_qc_flags.py` locks both rules down.
 
 ---
 
@@ -175,24 +195,26 @@ Our approach: physical range limits + per-profile despike + Savitzky-Golay. No g
 
 ---
 
-## Quantitative Comparison (890_2 deployment)
+## Quantitative Comparison
 
-```
-Temperature:
-  GliderTools retained:  93.6% (max 21.9°C — cuts warm surface!)
-  Our pipeline retained: 90.2% (max 35.4°C — correct)
-  Agreement at co-located good points: 94.3% within 0.01°C
+`step6.run_gt_comparison` writes `reports/*_gt_comparison.txt` for whatever
+deployment you run, with per-variable retention and agreement figures.
 
-Salinity:
-  GliderTools retained:  93.8%
-  Our pipeline retained: 81.3% (more removed by pressure cascade)
-  Agreement: 99.7% within 0.01 PSU
+Two things to read carefully in that report:
 
-Oxygen:
-  GliderTools retained:  95.1%
-  Our pipeline retained: 96.6%
-  Our pipeline adds: lag-corrected version (tau=30s)
-```
+- **Retention percentages have different denominators.** GliderTools runs over
+  the whole L0; our retention is over the L1, which `pre_clean()` has already
+  cropped. The report labels both counts.
+- **Agreement is computed on shared timestamps only.** L1 is a subset of L0, so
+  the files cannot be compared row-by-row — index *i* is a different moment in
+  each. The report states how many co-located pairs it found and skips the
+  statistic below 100.
+
+The qualitative result is the stable one, and it is the reason for the design:
+GliderTools' global IQR cuts warm surface water on a full-depth deployment,
+while the physical-range approach here does not. Where both pipelines keep a
+sample, they agree closely; the count difference is ARGO-specific tests that
+GliderTools does not implement.
 
 ---
 

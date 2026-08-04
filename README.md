@@ -98,7 +98,10 @@ output/
 
 ### Step 2/3 — QC + ARGO Flags
 **GliderTools-style processing (same methods, extended):**
-- IQR outlier removal (global for optics, per-profile for T/S/O2)
+- IQR outlier removal — **optics only** (chlorophyll, CDOM, backscatter).
+  T/S/O₂ deliberately use physical range limits instead; see
+  [Comparison with GliderTools](#comparison-with-glidertools) for why a global
+  IQR misjudges full-depth profiles.
 - Median despike (window = 5 points)
 - Savitzky-Golay smoothing per profile (window = 11 points, order 2)
 - Horizontal diff filter for salinity
@@ -127,10 +130,22 @@ output/
 **QC Flags (ARGO convention):**
 - `1` = Good  `2` = Probably good  `3` = Probably bad  `4` = Bad  `9` = Missing
 
+**Flag precedence.** The tests run in sequence and several judge the same
+variable. Every flag write goes through `_raise_flag`, which keeps whichever
+verdict is *worse* and never touches a `9`. A test cannot downgrade an earlier,
+harsher verdict, and none of them assigns a verdict to a value that is missing.
+
 ### Step 4 — Gridding
-- 1 m depth bins, `binned_statistic` mean per bin
+- 1 m depth bins. Each profile is **linearly interpolated** onto the depth grid
+  (`scipy.interpolate.interp1d`), matching pyglider — glider measurements are a
+  continuous profile sampled every few metres. No extrapolation beyond the
+  measured range; sparse or shallow profiles are bin-placed rather than
+  interpolated, so they show as points instead of smearing across the column.
 - **QC flags applied before gridding** — only flag 1 (good) and 2 (probably good)
   values contribute to each bin
+- Per-cell flags cannot survive binning, so the deployment-level retention
+  (`qc_pct_good`, `qc_pct_removed`, `qc_pct_missing`) is written as attributes
+  on each gridded variable. That is what the plot annotations report.
 - Large time gaps (> 48 h) masked in plots to prevent pcolormesh stretching
 
 ---
@@ -174,11 +189,15 @@ Both pipelines share the same core QC methods. Ours extends GliderTools with:
 | Bottle calibration | ✓ | · |
 | Thermal lag correction | ✓ | · |
 
-**Key finding:** On the 890_2 Arabian Sea deployment, both pipelines agree within
-0.01°C for temperature (94% of co-located points) and within 0.01 PSU for
-salinity (99.7%). The ~5-10% difference in valid point counts is from ARGO-specific
-tests that GliderTools does not apply (pressure monotonicity, density inversion,
-impossible speed).
+**Key finding:** On the 890_2 Arabian Sea deployment, both pipelines agree
+closely on co-located samples, and the difference in valid point counts comes
+from ARGO-specific tests that GliderTools does not apply (pressure monotonicity,
+density inversion, impossible speed).
+
+> Run `reports/*_gt_comparison.txt` on your own deployment for the current
+> figures. The report states how many co-located samples it used. Comparison is
+> done on shared timestamps only — L1 is a subset of L0 after `pre_clean()`
+> crops the record, so the two files cannot be compared row-by-row.
 
 **Important:** GliderTools' global IQR filter incorrectly removes warm surface
 water (~30°C SST) when deep cold water dominates the distribution. This pipeline
@@ -189,15 +208,26 @@ uses per-profile QC for T/S/O2 to avoid this problem.
 ## Requirements
 
 ```bash
-pip install numpy xarray scipy matplotlib gsw dbdreader pyyaml pandas netCDF4
-# Optional (better plots):
-pip install cartopy cmocean
-# Optional (comparison):
-pip install glidertools
+pip install -e .                 # core pipeline
+pip install -e ".[decode]"       # + dbdreader, for Step 1 binary decode
+pip install -e ".[plots]"        # + cartopy, cmocean
+pip install -e ".[compare]"      # + glidertools, for the comparison report
+pip install -e ".[dev]"          # + pytest
 ```
 
+Installing puts the `glider-rtqc` console script on your PATH; it works from
+any directory.
+
 `dbdreader` requires a C compiler on Windows. On Linux it installs cleanly.
-Use the provided `run_pipeline.sh` which auto-finds the correct Python.
+Every stage except Step 1 runs without it — point the pipeline at an existing
+L0 and it skips the decode. Use the provided `run_pipeline.sh` which auto-finds
+the correct Python.
+
+### Tests
+
+```bash
+python -m pytest
+```
 
 ---
 
@@ -220,30 +250,49 @@ bash run_pipeline.sh /path/to/data /path/to/L0-timeseries/file.nc
 ## Repository Structure
 
 ```
-Glider_RTQC/
-├── Glider_RTQC/                   ← pipeline code (this repo)
-│   ├── run_pipeline.sh            ← Linux/Mac launcher (auto-finds Python)
-│   ├── run_pipeline.bat           ← Windows launcher
-│   ├── README.md                  ← this file
-│   └── pipeline/
-│       ├── config.py              ← auto-detection + deployment settings
-│       ├── run_pipeline.py        ← orchestrator (--data-dir, --l0-path, --skip-step1)
-│       ├── step1.py               ← binary → L0 (robust error handling)
-│       ├── step23.py              ← L0 → L1 QC + ARGO flags
-│       ├── step4.py               ← L1 → grid + profiles (QC-masked)
-│       ├── step5.py               ← L0 + L1 time-depth plots
-│       ├── step6.py               ← track map, T-S, coverage, MLD, summary
-│       ├── step7.py               ← oceanographic section plots (9 types)
-│       └── verify.py              ← L1 diagnostics (GPS, T-S, QC flags)
-└── Raw_Data/                      ← your glider data goes here
-    └── 1130-Mar-2025/
-        ├── aft/logs/              ← Slocum binary files
-        ├── aft/sentlogs/
-        ├── deployment.yml         ← metadata (optional but recommended)
-        ├── combined_binary/       ← auto-created: all binaries collected here
-        ├── cache/                 ← auto-created: dbdreader cache
-        └── output/                ← auto-created: all results
+Glider_RTQC/                       ← pipeline code (this repo)
+├── run_pipeline.sh                ← Linux/Mac launcher (auto-finds Python)
+├── run_pipeline.bat               ← Windows launcher
+├── pyproject.toml                 ← install + the glider-rtqc console script
+├── README.md                      ← this file
+├── pipeline/
+│   ├── config.py                  ← auto-detection + deployment settings
+│   ├── run_pipeline.py            ← orchestrator (--data-dir, --l0-path, --skip-step1)
+│   ├── step1.py                   ← binary → L0 (robust error handling)
+│   ├── step23.py                  ← L0 → L1 QC + ARGO flags
+│   ├── step4.py                   ← L1 → grid + profiles (QC-masked)
+│   ├── step5.py                   ← L0 + L1 time-depth plots
+│   ├── step6.py                   ← track map, T-S, coverage, MLD, summary
+│   ├── step7.py                   ← oceanographic section plots (9 types)
+│   └── verify.py                  ← L1 diagnostics (GPS, T-S, QC flags)
+├── db/                            ← optional SQLite ingestion (see GLIDER_DB)
+│   ├── schema.sql
+│   └── load_deployment.py
+├── web_dashboard/                 ← optional Flask browser UI
+├── tests/                         ← pytest regression suite
+└── src/glider_rtqc/               ← console-script wrapper
+
+Raw_Data/                          ← your glider data goes here
+└── 1130-Mar-2025/
+    ├── aft/logs/                  ← Slocum binary files
+    ├── aft/sentlogs/
+    ├── deployment.yml             ← metadata (optional but recommended)
+    ├── combined_binary/           ← auto-created: all binaries collected here
+    ├── cache/                     ← auto-created: dbdreader cache
+    └── output/                    ← auto-created: all results
 ```
+
+### Web dashboard (optional)
+
+```bash
+GLIDER_RAW_DATA_DIR=/path/to/Raw_Data python web_dashboard/app.py
+```
+
+`GLIDER_RAW_DATA_DIR` is the folder holding one subdirectory per deployment.
+`GLIDER_PIPELINE` and `GLIDER_PYTHON` override the script and interpreter it
+launches. It binds to localhost; the Werkzeug debugger stays off unless you set
+`GLIDER_DASHBOARD_DEBUG=1`, and it refuses to combine that with a non-local
+host.
 
 ---
 
