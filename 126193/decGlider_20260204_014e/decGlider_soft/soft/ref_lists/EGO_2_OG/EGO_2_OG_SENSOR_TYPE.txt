@@ -1,0 +1,39 @@
+ACOUSTIC	TBD	TBD
+ACOUSTIC_GEOLOCATION	acoustic tracking systems 	https://vocab.nerc.ac.uk/collection/L05/current/357/
+CTD_PRES	CTD	https://vocab.nerc.ac.uk/collection/L05/current/130/
+CTD_TEMP	CTD	https://vocab.nerc.ac.uk/collection/L05/current/130/
+CTD_CNDC	CTD	https://vocab.nerc.ac.uk/collection/L05/current/130/
+EM	TBD	TBD
+FLUOROMETER_CDOM	active fluorometers	https://vocab.nerc.ac.uk/collection/L05/current/353/
+FLUOROMETER_CHLA	active fluorometers	https://vocab.nerc.ac.uk/collection/L05/current/353/
+FLUOROMETER_URANINE	active fluorometers	https://vocab.nerc.ac.uk/collection/L05/current/353/
+FLUOROMETER_RHODAMINE	active fluorometers	https://vocab.nerc.ac.uk/collection/L05/current/353/
+IDO_DOXY	dissolved gas sensors	https://vocab.nerc.ac.uk/collection/L05/current/351/
+OPTODE_DOXY	dissolved gas sensors	https://vocab.nerc.ac.uk/collection/L05/current/351/
+RADIOMETER_DOWN_IRR<nnn>	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR380	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR412	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR443	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR490	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR532	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_DOWN_IRR665	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_PAR	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+RADIOMETER_UP_RAD<nnn>	radiometers	https://vocab.nerc.ac.uk/collection/L05/current/122/
+BACKSCATTERINGMETER_BBP<nnn>	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP412	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP470	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP532	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP650	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP660	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP700	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP715	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_BBP880	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+BACKSCATTERINGMETER_TURBIDITY	optical backscatter sensors	https://vocab.nerc.ac.uk/collection/L05/current/123/
+SPECTROPHOTOMETER_NITRATE	spectrophotometers	https://vocab.nerc.ac.uk/collection/L05/current/LAB20/
+SPECTROPHOTOMETER_BISULFIDE	spectrophotometers	https://vocab.nerc.ac.uk/collection/L05/current/LAB20/
+STS_CNDC	CTD	https://vocab.nerc.ac.uk/collection/L05/current/130/
+STS_TEMP	CTD	https://vocab.nerc.ac.uk/collection/L05/current/130/
+TRANSISTOR_PH	pH sensors 	https://vocab.nerc.ac.uk/collection/L05/current/355/
+TRANSMISSOMETER_CP<nnn>	transmissometers 	https://vocab.nerc.ac.uk/collection/L05/current/124/
+FLOATCLOCK_MTIME	clock synchronisers	https://vocab.nerc.ac.uk/collection/L05/current/395/
+FLUOROMETER_PE	active fluorometers	https://vocab.nerc.ac.uk/collection/L05/current/353/

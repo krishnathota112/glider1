@@ -1,0 +1,5 @@
+WRC	Teledyne Webb Research
+KONGSBERG	Kongsberg Maritime AS
+ALSEAMAR	TBD
+BLUEFIN_ROBOTICS	Blue Robotics
+UNIVERSITY_OF_WASHINGTON	University of Washington Applied Physics Laboratory

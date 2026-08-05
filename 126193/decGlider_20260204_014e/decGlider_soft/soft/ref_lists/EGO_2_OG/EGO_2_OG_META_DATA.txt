@@ -1,0 +1,65 @@
+ogGlobalAttributes	title	value	OceanGliders trajectory file	EOL
+ogGlobalAttributes	platform	value	sub-surface gliders	EOL
+ogGlobalAttributes	platform_vocabulary	value	https://vocab.nerc.ac.uk/collection/L06/current/27/	EOL
+ogGlobalAttributes	id			EOL
+ogGlobalAttributes	naming_authority			EOL
+ogGlobalAttributes	institution	egoGlobalAttributes	institution	EOL
+ogGlobalAttributes	internal_mission_identifier			EOL
+ogGlobalAttributes	geospatial_lat_min	comment	computed by the file generator	EOL
+ogGlobalAttributes	geospatial_lat_max	comment	computed by the file generator	EOL
+ogGlobalAttributes	geospatial_lon_min	comment	computed by the file generator	EOL
+ogGlobalAttributes	geospatial_lon_max	comment	computed by the file generator	EOL
+ogGlobalAttributes	geospatial_vertical_min	comment	computed by the file generator	EOL
+ogGlobalAttributes	geospatial_vertical_max	comment	computed by the file generator	EOL
+ogGlobalAttributes	time_coverage_start	comment	computed by the file generator	EOL
+ogGlobalAttributes	time_coverage_end	comment	computed by the file generator	EOL
+ogGlobalAttributes	site	egoGlobalAttributes	area	EOL
+ogGlobalAttributes	site_vocabulary			EOL
+ogGlobalAttributes	program			EOL
+ogGlobalAttributes	program_vocabulary			EOL
+ogGlobalAttributes	project	egoGlobalAttributes	project_name	EOL
+ogGlobalAttributes	network			EOL
+ogGlobalAttributes	contributor_name	egoGlobalAttributes	principal_investigator	EOL
+ogGlobalAttributes	contributor_email	egoGlobalAttributes	principal_investigator_email	EOL
+ogGlobalAttributes	contributor_id			EOL
+ogGlobalAttributes	contributor_role			EOL
+ogGlobalAttributes	contributor_role_vocabulary	value	http://vocab.nerc.ac.uk/search_nvs/W08/	EOL
+ogGlobalAttributes	contributing_institutions			EOL
+ogGlobalAttributes	contributing_institutions_vocabulary	value	https://edmo.seadatanet.org/report/544, https://ror.org/01	EOL
+ogGlobalAttributes	contributing_institutions_role			EOL
+ogGlobalAttributes	contributing_institutions_role_vocabulary	value	https://vocab.nerc.ac.uk/collection/W08/current/	EOL
+ogGlobalAttributes	uri			EOL
+ogGlobalAttributes	data_url			EOL
+ogGlobalAttributes	doi	egoGlobalAttributes	doi	EOL
+ogGlobalAttributes	rtqc_method			EOL
+ogGlobalAttributes	rtqc_method_doi	egoGlobalAttributes	qc_manual	EOL
+ogGlobalAttributes	web_link			EOL
+ogGlobalAttributes	comment	egoGlobalAttributes	comment	EOL
+ogGlobalAttributes	start_date	egoGliderDeploymentInformation	DEPLOYMENT_START_DATE	EOL
+ogGlobalAttributes	date_created	egoGlobalAttributes	date_update	EOL
+ogGlobalAttributes	featureType	value	trajectory	EOL
+ogGlobalAttributes	Conventions	value	CF-1.10, ACDD-1.3, OG-1.0	EOL
+				EOL
+ogTrajectoryName	TRAJECTORY	comment	computed by the file generator	EOL
+				EOL
+ogPlatformInformation	WMO_IDENTIFIER	egoGlobalAttributes	wmo_platform_code	EOL
+ogPlatformInformation	PLATFORM_MODEL	egoGliderCharacteristics	PLATFORM_TYPE	EOL
+ogPlatformInformation	PLATFORM_SERIAL_NUMBER	egoGliderCharacteristics	GLIDER_SERIAL_NO	EOL
+ogPlatformInformation	PLATFORM_NAME	egoGlobalAttributes	platform_code	EOL
+ogPlatformInformation	PLATFORM_DEPTH_RATING			EOL
+ogPlatformInformation	ICES_CODE			EOL
+ogPlatformInformation	PLATFORM_MAKER	egoGliderCharacteristics	PLATFORM_MAKER	EOL
+				EOL
+ogDeploymentInformation	DEPLOYMENT_TIME	egoGliderDeploymentInformation	DEPLOYMENT_START_DATE	EOL
+ogDeploymentInformation	DEPLOYMENT_LATITUDE	egoGliderDeploymentInformation	DEPLOYMENT_START_LATITUDE	EOL
+ogDeploymentInformation	DEPLOYMENT_LONGITUDE	egoGliderDeploymentInformation	DEPLOYMENT_START_LONGITUDE	EOL
+				EOL
+ogFieldComparisonReference	FIELD_COMPARISON_REFERENCE			EOL
+				EOL
+ogHardwareInformation	GLIDER_FIRMWARE_VERSION	egoGliderCharacteristics	FIRMWARE_VERSION_NAVIGATION	EOL
+ogHardwareInformation	LANDSTATION_VERSION			EOL
+ogHardwareInformation	BATTERY_TYPE	egoGliderCharacteristics	BATTERY_TYPE	EOL
+ogHardwareInformation	BATTERY_PACK	egoGliderCharacteristics	BATTERY_PACKS	EOL
+				EOL
+ogTelecomInformation	TELECOM_TYPE	egoGliderCharacteristics	TRANS_SYSTEM	EOL
+ogTelecomInformation	TRACKING_SYSTEM	egoGliderCharacteristics	POSITIONING_SYSTEM	EOL

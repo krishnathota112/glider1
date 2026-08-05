@@ -1,0 +1,173 @@
+{
+    "EGO_format_version": "1.4",
+    
+    "SENSOR"            : ["GLIDER_TECH"],
+    "SENSOR_MAKER"      : [""],
+    "SENSOR_MODEL"      : [""],
+    "SENSOR_SERIAL_NO"  : [""],
+    "SENSOR_MOUNT"      : [""],
+    "SENSOR_ORIENTATION": [""],
+
+    "PARAMETER"             : [
+	                            "TECH_heading",
+	                            "TECH_heading_C",
+	                            "TECH_pitch",
+	                            "TECH_roll",
+	                            "TECH_ballast_pumped",
+	                            "TECH_ballast_pumped_C",
+	                            "TECH_battery_position",
+	                            "TECH_battery_position_C",
+	                            "TECH_battery_rotation",
+	                            "TECH_battery_rotation_C"
+							  ],
+    "PARAMETER_SENSOR"      : [""],
+    "PARAMETER_DATA_MODE"   : [""],
+    "PARAMETER_UNITS"       : [""],
+    "PARAMETER_ACCURACY"    : [""],
+    "PARAMETER_RESOLUTION"  : [""],
+
+    "CALIBRATION_COEFFICIENT": [],
+
+    "parametersList": [
+        {
+            "ego_variable_name"     : "TECH_heading",
+            "glider_variable_name"  : "Heading",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_heading_C",
+            "glider_variable_name"  : "DesiredH",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_pitch",
+            "glider_variable_name"  : "Pitch",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_roll",
+            "glider_variable_name"  : "Roll",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped",
+            "glider_variable_name"  : "BallastPos",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped_C",
+            "glider_variable_name"  : "BallastCmd",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_position",
+            "glider_variable_name"  : "LinPos",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_position_C",
+            "glider_variable_name"  : "LinCmd",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_rotation",
+            "glider_variable_name"  : "AngPos",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_rotation_C",
+            "glider_variable_name"  : "AngCmd",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        }
+    ]
+}

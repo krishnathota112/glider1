@@ -1,0 +1,7 @@
+SLOCUM_SG1	Teledyne Webb Research Slocum G1 glider
+SLOCUM_SG2	Teledyne Webb Research Slocum G2 glider
+SLOCUM_SG3	Teledyne Webb Research Slocum G3 glider
+SEAGLIDER	University of Washington Seaglider M1 glider
+SEAEXPLORER	TBD
+SEAEXPLORER_SHALLOW	TBD
+SPRAY	Scripps Institution of Oceanography Spray glider

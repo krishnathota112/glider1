@@ -1,0 +1,50 @@
+{
+    "EGO_format_version": "1.4",
+    
+    "SENSOR"            : ["GLIDER_TECH"],
+    "SENSOR_MAKER"      : [""],
+    "SENSOR_MODEL"      : [""],
+    "SENSOR_SERIAL_NO"  : [""],
+    "SENSOR_MOUNT"      : [""],
+    "SENSOR_ORIENTATION": [""],
+
+    "PARAMETER"             : ["TECH_m_de_oil_vol", "TECH_m_ballast_pumped"],
+    "PARAMETER_SENSOR"      : [""],
+    "PARAMETER_DATA_MODE"   : [""],
+    "PARAMETER_UNITS"       : [""],
+    "PARAMETER_ACCURACY"    : [""],
+    "PARAMETER_RESOLUTION"  : [""],
+
+    "CALIBRATION_COEFFICIENT": [],
+
+    "parametersList": [
+        {
+            "ego_variable_name"     : "TECH_m_de_oil_vol",
+            "glider_variable_name"  : "rawData.vars_m_time.m_de_oil_vol",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_m_ballast_pumped",
+            "glider_variable_name"  : "rawData.vars_m_time.m_ballast_pumped",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        }
+    ]
+}

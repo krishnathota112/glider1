@@ -1,0 +1,36 @@
+{
+    "EGO_format_version": "1.4",
+    
+    "SENSOR"            : ["GLIDER_TECH"],
+    "SENSOR_MAKER"      : [""],
+    "SENSOR_MODEL"      : [""],
+    "SENSOR_SERIAL_NO"  : [""],
+    "SENSOR_MOUNT"      : [""],
+    "SENSOR_ORIENTATION": [""],
+
+    "PARAMETER"             : ["TECH_BallastPos"],
+    "PARAMETER_SENSOR"      : [""],
+    "PARAMETER_DATA_MODE"   : [""],
+    "PARAMETER_UNITS"       : [""],
+    "PARAMETER_ACCURACY"    : [""],
+    "PARAMETER_RESOLUTION"  : [""],
+
+    "CALIBRATION_COEFFICIENT": [],
+
+    "parametersList": [
+        {
+            "ego_variable_name"     : "TECH_BallastPos",
+            "glider_variable_name"  : "BALLAST_POS",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        }
+    ]
+}

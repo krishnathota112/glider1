@@ -1,0 +1,128 @@
+FSI	Falmouth Scientific Instruments ocean conductivity module	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0455/
+SBE	TBD	TBD
+SBE37	TBD	TBD
+SBE41	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41_V2.5	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41_V2.6	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41_V3	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41CP	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41_IDO_V1.0c	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41_IDO_V2.0	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41CP_IDO_V2.0b	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41_IDO_V3.0	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41CP_V1	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.1	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.2	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.2a	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.3	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.3b	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.4	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.5	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.7	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.8	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.9	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V1.9a	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V2	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V3	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V3.0a	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V3.0c	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V4.4.0	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V5.0.1	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V5.3.0	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V7.2.3	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41CP_V7.2.5	Sea-Bird SBE 41CP CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0669/
+SBE41N	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41N_V5.3.0	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE41N_V5.4.0	Sea-Bird SBE 41 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0668/
+SBE61_V4.5.2	Sea-Bird SBE 61 Deep Argo CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1238/
+SBE61_V4.5.3	Sea-Bird SBE 61 Deep Argo CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1238/
+SBE61_V5.0.0	Sea-Bird SBE 61 Deep Argo CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1238/
+SBE61_V5.0.1	Sea-Bird SBE 61 Deep Argo CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1238/
+SBE61	Sea-Bird SBE 61 Deep Argo CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1238/
+CTD_F01	TBD	TBD
+RBR	TBD	TBD
+RBRoem_V1.16	TBD	TBD
+RBR_LEGATO3	RBR Legato3 CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1745/
+SBE_GPCTD	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_1111S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_1200S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_1201S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_1300S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_1301S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_2411S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_2500S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_2501S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_2600S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_GPCTD_2601S	Sea-Bird Slocum Glider Payload {GPCTD} CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1492/
+SBE_CTD_SAIL	Sea-Bird CT Sail CTD	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1188/
+SBE43_IDO	Sea-Bird SBE 43 Dissolved Oxygen Sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0036/
+SBE43I	Sea-Bird SBE 43 I (integral) dissolved oxygen sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1233/
+SBE43F_IDO	Sea-Bird SBE 43 I (integral) dissolved oxygen sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1233/
+SBE63_OPTODE	Sea-Bird SBE 63 dissolved oxygen sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0739/
+AANDERAA_OPTODE	TBD	TBD
+AANDERAA_OPTODE_3830	Aanderaa 3830 oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0836/
+AANDERAA_OPTODE_3835	Aanderaa 3835 oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0103/
+AANDERAA_OPTODE_3930	Aanderaa 3930 oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1421/
+AANDERAA_OPTODE_4330	Aanderaa 4330 and 4330F oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0826/
+AANDERAA_OPTODE_4330F	Aanderaa 4330 and 4330F oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0826/
+AANDERAA_OPTODE_4831	Aanderaa 4831 oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1239/
+AANDERAA_OPTODE_4831F	Aanderaa 4831F oxygen optode	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1240/
+ARO_FT	JFE Advantech Rinko FT ARO-FT oxygen sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1783/
+AROD_FT	JFE Advantech Rinko FT ARO-FT oxygen sensor Deep	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1783/
+DRUCK_2900PSIA	Druck 2900 PSIA pressure sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0837/
+DRUCK	TBD	TBD
+DRUCK_10153PSIA	TBD	TBD
+PAINE	TBD	TBD
+PAINE_1500PSIA	TBD	TBD
+PAINE_1600PSIA	Paine 1600 PSIA pressure sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0839/
+PAINE_2000PSIA	TBD	TBD
+PAINE_2900PSIA	TBD	TBD
+PAINE_3000PSIA	Paine 3000 PSIA pressure sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0838/
+AMETEK	TBD	TBD
+AMETEK_3000PSIA	TBD	TBD
+KISTLER	TBD	TBD
+KISTLER_2900PSIA	TBD	TBD
+KISTLER_10153PSIA	TBD	TBD
+KELLER_PA8	TBD	TBD
+SEASCAN_SSTD	TBD	TBD
+MP40_C_2000_G	TBD	TBD
+SBE_STS	TBD	TBD
+SUNA	Satlantic Submersible Ultraviolet Nitrate Analyser (SUNA)	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0489/
+SUNA_V2	Satlantic {Sea-Bird} Submersible Ultraviolet Nitrate Analyser V2 (SUNA V2) nutrient analyser series	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1562/
+ISUS	Satlantic MBARI-ISUS-X V2 ultraviolet spectrophotometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1507/
+ISUS_V3	Satlantic {Sea-Bird} ISUS V3 Nitrate Sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0528/
+C_ROVER	WET Labs {Sea-Bird WETLabs} C-Star CST-10-DR transmissometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1903/
+DURA	TBD	TBD
+SEAFET	Satlantic {Sea-Bird} SeaFET V1 pH sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1292/
+SATLANTIC_OCR504_ICSW	Satlantic {Sea-Bird} OCR-504 multispectral radiometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0625/
+SATLANTIC_OCR504_R10W	Satlantic {Sea-Bird} OCR-504 multispectral radiometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0625/
+SATLANTIC_OCR507_ICSW	Satlantic {Sea-Bird} OCR-507 multispectral radiometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0442/
+SATLANTIC_OCR507_R10W	Satlantic {Sea-Bird} OCR-507 multispectral radiometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0442/
+SATLANTIC_OCR507_ICSWR10W	Satlantic {Sea-Bird} OCR-507 multispectral radiometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0442/
+SATLANTIC_PAR	Satlantic {Sea-Bird} Photosynthetically Active Radiation sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0973/
+ECO_BB	WET Labs {Sea-Bird WETLabs} ECO BB(RT)D backscattering sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0060/
+ECO_FL	WET Labs {Sea-Bird WETLabs} ECO FL fluorometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0172/
+ECO_NTU	WET Labs {Sea-Bird WETLabs} ECO NTU turbidity sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0879/
+ECO_FLBB	WET Labs {Sea-Bird WETLabs} ECO FLBB scattering fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1361/
+ECO_FLBB_AP2	WET Labs {Sea-Bird WETLabs} ECO FLBB scattering fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1361/
+ECO_FLBB_2K	WET Labs {Sea-Bird WETLabs} ECO FLBB scattering fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1361/
+ECO_FLNTU	WET Labs {Sea-Bird WETLabs} ECO FLNTU combined fluorometer and turbidity sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0215/
+ECO_BB2	WET Labs {Sea-Bird WETLabs} ECO FLBB-RTD scattering and fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1496/
+ECO_FLBBCD	WET Labs {Sea-Bird WETLabs} ECO FLBBCD scattering fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1141/
+ECO_FLBBPE	WET Labs {Sea-Bird WETLabs} ECO Puck Triplet FLBBPC scattering fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1904/
+ECO_FLBB2	WET Labs {Sea-Bird WETLabs} ECO BB2F combined scattering meter and fluorometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1747/
+ECO_BB3	WET Labs {Sea-Bird WETLabs} ECO Puck Triplet BB3SLO scattering sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1911/
+ECO_URRH	TBD	TBD
+MCOMS_FLBBCD	WET Labs {Sea-Bird WETLabs} ECO MCOMS FLBBCD scattering and fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1977/
+MCOMS_FLBB2	WET Labs {Sea-Bird WETLabs} ECO MCOMS FLBB2 scattering and fluorescence sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1976/
+CYCLOPS_7_FLUOROMETER	Turner Designs Cyclops-7 chlorophyll fluorometer	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0365/
+SEAPOINT_TURBIDITY_METER	Seapoint Turbidity Meter	https://vocab.nerc.ac.uk/collection/L22/current/TOOL0104/
+SEAOWL_UV_A	WET Labs {Sea-Bird WETLabs} SeaOWL UV-A Sea Oil-in-Water Locator	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1766/
+RAFOS	TBD	TBD
+PAL_UW	TBD	TBD
+EM	TBD	TBD
+FLOATCLOCK	TBD	TBD
+AANDERAA_OPTODE_5013	TBD	TBD
+AANDERAA_OPTODE_5014	TBD	TBD
+AANDERAA_OPTODE_5015	TBD	TBD
+RBR_CODA_T_ODO	RBR Coda T.ODO Temperature and Dissolved Oxygen Sensor	https://vocab.nerc.ac.uk/collection/L22/current/TOOL1717/

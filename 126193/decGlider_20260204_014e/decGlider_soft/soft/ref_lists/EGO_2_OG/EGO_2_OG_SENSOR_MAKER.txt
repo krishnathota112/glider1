@@ -1,0 +1,20 @@
+UNKNOWN	TBD	TBD
+AANDERAA	Aanderaa	https://vocab.nerc.ac.uk/collection/L35/current/MAN0007/
+AMETEK	TBD	TBD
+DRUCK	Druck	https://vocab.nerc.ac.uk/collection/L35/current/MAN0311/
+FSI	Falmouth Scientific Inc.	https://vocab.nerc.ac.uk/collection/L35/current/MAN0324/
+KISTLER	Kistler	https://vocab.nerc.ac.uk/collection/L35/current/MAN0142/
+PAINE	TBD	TBD
+SBE	Sea-Bird Scientific	https://vocab.nerc.ac.uk/collection/L35/current/MAN0013/
+SEASCAN	TBD	TBD
+WETLABS	WET Labs	https://vocab.nerc.ac.uk/collection/L35/current/MAN0026/
+MBARI	TBD	TBD
+SATLANTIC	Satlantic	https://vocab.nerc.ac.uk/collection/L35/current/MAN0027/
+JAC	JFE Advantech	https://vocab.nerc.ac.uk/collection/L35/current/MAN0053/
+APL_UW	University of Washington	https://vocab.nerc.ac.uk/collection/L35/current/MAN0024/
+TSK	Tsk America, Inc.	https://vocab.nerc.ac.uk/collection/L35/current/MAN0169/
+RBR	RBR	https://vocab.nerc.ac.uk/collection/L35/current/MAN0049/
+KELLER	Keller America Inc.	https://vocab.nerc.ac.uk/collection/L35/current/MAN0290/
+MICRON	TBD	TBD
+SEAPOINT	Seapoint Sensors, Inc.	https://vocab.nerc.ac.uk/collection/L35/current/MAN0177/
+TURNER_DESIGN	Turner designs 	https://vocab.nerc.ac.uk/collection/L35/current/MAN0080/

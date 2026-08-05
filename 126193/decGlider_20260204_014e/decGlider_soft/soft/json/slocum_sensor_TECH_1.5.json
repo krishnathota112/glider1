@@ -1,0 +1,233 @@
+{
+    "EGO_format_version": "1.5",
+    
+    "SENSOR"            : ["GLIDER_TECH"],
+    "SENSOR_MAKER"      : [""],
+    "SENSOR_MODEL"      : [""],
+    "SENSOR_SERIAL_NO"  : [""],
+    "SENSOR_MOUNT"      : [""],
+    "SENSOR_ORIENTATION": [""],
+
+    "PARAMETER"             : [
+	                            "TECH_heading",
+	                            "TECH_heading_C",
+	                            "TECH_pitch",
+	                            "TECH_pitch_C",
+	                            "TECH_roll",
+	                            "TECH_roll_C",
+	                            "TECH_ballast_pumped1",
+	                            "TECH_ballast_pumped1_C",
+	                            "TECH_ballast_pumped2",
+	                            "TECH_ballast_pumped2_C",
+	                            "TECH_battery_position",
+	                            "TECH_battery_position_C",
+	                            "TECH_fin",
+	                            "TECH_fin_C"
+							  ],
+    "PARAMETER_SENSOR"      : [""],
+    "PARAMETER_DATA_MODE"   : [""],
+    "PARAMETER_UNITS"       : [""],
+    "PARAMETER_ACCURACY"    : [""],
+    "PARAMETER_RESOLUTION"  : [""],
+
+    "CALIBRATION_COEFFICIENT": [],
+
+    "parametersList": [
+        {
+            "ego_variable_name"     : "TECH_heading",
+            "glider_variable_name"  : "rawData.vars_m_time.m_heading",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_heading_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_heading",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_pitch",
+            "glider_variable_name"  : "rawData.vars_m_time.m_pitch",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_pitch_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_pitch",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_roll",
+            "glider_variable_name"  : "rawData.vars_m_time.m_roll",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_roll_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_roll",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped1",
+            "glider_variable_name"  : "rawData.vars_m_time.m_ballast_pumped",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped1_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_ballast_pumped",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped2",
+            "glider_variable_name"  : "rawData.vars_m_time.m_de_oil_vol",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_ballast_pumped2_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_de_oil_vol",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_position",
+            "glider_variable_name"  : "rawData.vars_m_time.m_battpos",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_battery_position_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_battpos",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_fin",
+            "glider_variable_name"  : "rawData.vars_m_time.m_fin",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        },
+        {
+            "ego_variable_name"     : "TECH_fin_C",
+            "glider_variable_name"  : "rawData.vars_m_time.c_fin",
+            "comment"               : "",
+            "cell_methods"          : "",
+            "reference_scale"       : "",
+
+            "derivation_equation"   : "",
+            "derivation_coefficient": "",
+            "derivation_comment"    : "",
+            "derivation_date"       : "",
+
+            "processing_id": ""
+        }
+    ]
+}
