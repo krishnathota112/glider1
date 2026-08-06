@@ -501,7 +501,7 @@ def _add_sensor_param_tables(deploy_meta, data_vars, param_list):
         attrs={"long_name": "Name of the sensor that measures this parameter",
                "conventions": "EGO reference table 25", "_FillValue": " "})
     data_vars["PARAMETER_DATA_MODE"] = xr.DataArray(
-        _str_array(["R"] * n_p, 1),   # R = real-time for all
+        np.array(["R"] * n_p, dtype="U1"),
         dims=["N_PARAM"],
         attrs={"long_name": "Data mode of the parameter",
                "conventions": "EGO reference table 19", "_FillValue": " "})
