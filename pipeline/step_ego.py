@@ -418,8 +418,12 @@ def _add_phase_vars(src_ds, data_vars, n):
     })
 
     if "profile_index" in src_ds:
-        pn = src_ds["profile_index"].values.astype(np.int32)
-        pn[~np.isfinite(src_ds["profile_index"].values)] = 99999
+        pi_raw = src_ds["profile_index"].values
+        n_nan_pi = int(np.sum(~np.isfinite(pi_raw)))
+        if n_nan_pi > 0:
+            print(f"  NOTE: profile_index has {n_nan_pi} NaN values — "
+                  f"filling with 99999 in PHASE_NUMBER")
+        pn = np.where(np.isfinite(pi_raw), pi_raw.astype(np.int32), 99999).astype(np.int32)
     else:
         pn = np.full(n, 99999, dtype=np.int32)
 
@@ -517,10 +521,12 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
     """
     fill = np.float32(99999.0)
 
-    # Pre-fetch density for DOXY conversion
+    # Pre-fetch density for DOXY conversion (umol/L -> micromole/kg)
     density = None
     if "density" in src_ds:
         density = src_ds["density"].values.astype(np.float64)
+        d_valid = density[np.isfinite(density)]
+        print(f"  DEBUG density: n={len(d_valid)}, range={d_valid.min():.1f}-{d_valid.max():.1f} kg/m3")
 
     written_params = []
 
@@ -545,10 +551,15 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
                 converted = raw_vals.copy()
                 converted[valid] = raw_vals[valid] / dens_kg_per_L[valid].astype(np.float32)
                 converted[~valid] = fill
+                # DEBUG: confirm division actually happened
+                print(f"  DEBUG DOXY conversion:")
+                print(f"    density sample (kg/m3): {density[:5]}")
+                print(f"    oxygen_raw sample (umol/L): {raw_vals[:5]}")
+                print(f"    converted sample (umol/kg): {converted[:5]}")
+                print(f"    n_valid_for_conversion: {valid.sum()}")
                 raw_vals = converted
             else:
-                print(f"  WARNING: density not available — DOXY conversion skipped, "
-                      f"values remain in umol/L (label will be wrong)")
+                print(f"  WARNING: density not available — DOXY conversion skipped")
 
         raw_vals[~np.isfinite(raw_vals)] = fill
 
@@ -599,6 +610,25 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
         adj_vals = np.full(n, fill, dtype=np.float32)
         if adj_src and adj_src in src_ds:
             adj_raw = src_ds[adj_src].values.astype(np.float32).copy()
+            # Sanity check: adjusted values should not have a wider range than
+            # the source variable's own physical limits. If they do, it means
+            # the adjusted source is from a different (uncropped) dataset.
+            # In that case fall back to using the raw values.
+            if internal in src_ds:
+                raw_finite = src_ds[internal].values
+                raw_finite = raw_finite[np.isfinite(raw_finite)]
+                adj_finite = adj_raw[np.isfinite(adj_raw)]
+                if len(raw_finite) > 0 and len(adj_finite) > 0:
+                    raw_span = float(raw_finite.max() - raw_finite.min())
+                    adj_span = float(adj_finite.max() - adj_finite.min())
+                    # If adjusted span is >20% wider than raw, it's pulling
+                    # from the wrong (uncropped) source — use raw instead
+                    if adj_span > raw_span * 1.20:
+                        print(f"  WARNING: {ego}_ADJUSTED span ({adj_span:.2f}) "
+                              f"wider than raw ({raw_span:.2f}) — "
+                              f"using raw values as adjusted (adjusted source "
+                              f"'{adj_src}' appears uncropped)")
+                        adj_raw = src_ds[internal].values.astype(np.float32).copy()
             if needs_dc and density is not None:
                 dens_kg_per_L = density / 1000.0
                 valid = np.isfinite(adj_raw) & np.isfinite(dens_kg_per_L) & (dens_kg_per_L > 0.5)
