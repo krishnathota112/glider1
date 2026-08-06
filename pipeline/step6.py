@@ -472,17 +472,31 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
             max_d = float(np.nanmax(ds0["depth"].values))
             w(f"  Max depth:    {max_d:.1f} m")
 
-        # GPS track distance
-        if "latitude" in ds0 and "longitude" in ds0:
+        # GPS track distance — computed between profile endpoints only,
+        # not between every interpolated timestamp.
+        # Summing all consecutive lat/lon differences gives Earth-circumference
+        # artifacts because most positions are linearly interpolated between
+        # the ~360 actual surface GPS fixes.
+        if "latitude" in ds0 and "longitude" in ds0 and "profile_index" in ds0:
             lat = ds0["latitude"].values
             lon = ds0["longitude"].values
-            valid = np.isfinite(lat) & np.isfinite(lon)
-            if np.sum(valid) > 1:
-                dlat = np.diff(lat[valid]) * 111.32
-                dlon = (np.diff(lon[valid]) * 111.32
-                        * np.cos(np.radians(float(np.nanmean(lat[valid])))))
+            pi  = ds0["profile_index"].values
+            # Use the mean lat/lon of each profile as its representative position
+            unique_profiles = np.unique(pi[np.isfinite(pi)])
+            prof_lats, prof_lons = [], []
+            for p in unique_profiles:
+                mask = (pi == p) & np.isfinite(lat) & np.isfinite(lon)
+                if np.sum(mask) > 0:
+                    prof_lats.append(float(np.nanmean(lat[mask])))
+                    prof_lons.append(float(np.nanmean(lon[mask])))
+            if len(prof_lats) > 1:
+                plat = np.array(prof_lats)
+                plon = np.array(prof_lons)
+                dlat = np.diff(plat) * 111.32
+                dlon = (np.diff(plon) * 111.32
+                        * np.cos(np.radians(float(np.nanmean(plat)))))
                 dist = float(np.sum(np.sqrt(dlat**2 + dlon**2)))
-                w(f"  Track dist:   {dist:.0f} km")
+                w(f"  Track dist:   {dist:.0f} km  ({len(unique_profiles)} profiles)")
 
         # Variable coverage in L0
         w()

@@ -312,6 +312,25 @@ def main():
         verify_main()
         print()
 
+    # ── Step EGO: Convert L0/L1 to EGO 1.5 format ───────────────
+    print("=" * 60)
+    print("  STEP EGO: EGO 1.5 NetCDF Conversion")
+    print("=" * 60)
+    try:
+        from step_ego import run_ego_conversion
+        from config import DEPLOY_YAML
+        ego_results = run_ego_conversion(
+            l0_path=l0_path,
+            l1_path=l1_path,
+            deploy_yaml=DEPLOY_YAML,
+            output_dir=OUTPUT_DIR,
+        )
+        ego_dir = os.path.join(OUTPUT_DIR, "EGO-timeseries")
+        print(f"  EGO outputs: {ego_dir}")
+    except Exception as e:
+        print(f"  WARNING: EGO conversion failed ({e}) — pipeline products unaffected")
+    print()
+
     # ── Done ─────────────────────────────────────────────────────
     elapsed = time.time() - t_start
     print("=" * 60)
@@ -328,6 +347,7 @@ def main():
     print(f"    profiles:    {dirs['L1_profiles']}")
     print(f"    gridfiles:   {dirs['L1_grid']}")
     print()
+    print(f"  EGO:     {os.path.join(OUTPUT_DIR, 'EGO-timeseries')}")
     print(f"  Plots:   {dirs['plots']}")
     print(f"  Reports: {dirs['reports']}")
     print("=" * 60)
