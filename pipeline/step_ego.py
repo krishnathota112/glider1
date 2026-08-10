@@ -296,7 +296,12 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
     )
     data_vars["TIME"] = time_da
 
-    # TIME_QC — flag 0 (no QC performed) for all points
+    # TIME_QC — flag 0 everywhere is CORRECT here, not an oversight.
+    # This pipeline applies no RTQC test to the TIME axis itself: timestamps are
+    # taken as decoded from the glider's science/flight clocks and never
+    # independently validated. EGO reference table 2.1 defines 0 =
+    # "no_qc_performed", which is the accurate statement. Do NOT "fix" this to
+    # flag 1 (good_data) — that would assert a check this pipeline never ran.
     time_qc = np.zeros(n, dtype=np.int8)
     data_vars["TIME_QC"] = xr.DataArray(time_qc, dims=["TIME"], attrs=dict(_QC_ATTRS))
 
@@ -418,12 +423,21 @@ def _add_phase_vars(src_ds, data_vars, n):
     })
 
     if "profile_index" in src_ds:
-        pi_raw = src_ds["profile_index"].values
-        n_nan_pi = int(np.sum(~np.isfinite(pi_raw)))
+        pi_raw = np.asarray(src_ds["profile_index"].values, dtype=np.float64)
+        finite = np.isfinite(pi_raw)
+        n_nan_pi = int((~finite).sum())
+        # NaN -> int32 is undefined behaviour in numpy: it yields INT32_MIN
+        # (-2147483648) with only a RuntimeWarning, never an error. So never
+        # cast the whole array and select afterwards — cast ONLY the finite
+        # subset, and write the declared _FillValue everywhere else. Those
+        # points genuinely have no profile assignment (glider between profiles
+        # or unclassified), and EGO's fill value is the honest encoding of that.
+        pn = np.full(n, 99999, dtype=np.int32)
+        pn[finite] = pi_raw[finite].astype(np.int32)
         if n_nan_pi > 0:
-            print(f"  NOTE: profile_index has {n_nan_pi} NaN values — "
-                  f"filling with 99999 in PHASE_NUMBER")
-        pn = np.where(np.isfinite(pi_raw), pi_raw.astype(np.int32), 99999).astype(np.int32)
+            print(f"  NOTE: profile_index has {n_nan_pi}/{pi_raw.size} NaN values "
+                  f"({100.0 * n_nan_pi / pi_raw.size:.2f}%) — PHASE_NUMBER set to "
+                  f"fill value 99999 there (not cast)")
     else:
         pn = np.full(n, 99999, dtype=np.int32)
 
@@ -433,36 +447,117 @@ def _add_phase_vars(src_ds, data_vars, n):
     })
 
 
-def _add_sensor_param_tables(deploy_meta, data_vars, param_list):
+def _ego_sensor_for_param(ego_param: str) -> str:
+    """
+    EGO reference table 25 sensor name for a given EGO parameter.
+
+    Cross-checked against the SOCIB/GROOM reference toolbox
+    (ref_lists/GL_REFERENCE_TABLE_25.txt). EGO models one SENSOR entry per
+    MEASURED PARAMETER, not one per physical instrument — a single CTD supplies
+    three table-25 sensors (CTD_TEMP, CTD_CNDC, CTD_PRES) and the ECO puck
+    supplies four. The previous free-text names ("CTD", "AANDERAA_OPTODE",
+    "ECO_FLBBCD") are NOT in table 25 and would fail the EGO 1.5 checker.
+    """
+    return _EGO_SENSOR_BY_PARAM.get(ego_param, "UNKNOWN")
+
+
+# EGO param -> (table-25 sensor, table-26 maker, table-27 model, deployment.yml
+# key prefix for the serial number). Values verified against
+# GL_REFERENCE_TABLE_25/26/27.txt in the reference toolbox.
+_SENSOR_TABLE = {
+    "TEMP":      ("CTD_TEMP",                    "SBE",      "SBE_GPCTD",             "ctd"),
+    "CNDC":      ("CTD_CNDC",                    "SBE",      "SBE_GPCTD",             "ctd"),
+    "PRES":      ("CTD_PRES",                    "SBE",      "SBE_GPCTD",             "ctd"),
+    "PSAL":      ("CTD_CNDC",                    "SBE",      "SBE_GPCTD",             "ctd"),
+    "DOXY":      ("OPTODE_DOXY",                 "AANDERAA", "AANDERAA_OPTODE_4831",  "optode"),
+    "CHLA":      ("FLUOROMETER_CHLA",            "WETLABS",  "ECO_FLBBCD",            "optics"),
+    "CDOM":      ("FLUOROMETER_CDOM",            "WETLABS",  "ECO_FLBBCD",            "optics"),
+    "BBP700":    ("BACKSCATTERINGMETER_BBP700",  "WETLABS",  "ECO_FLBBCD",            "optics"),
+    "TURBIDITY": ("BACKSCATTERINGMETER_TURBIDITY", "WETLABS", "ECO_FLBBCD",           "optics"),
+}
+_EGO_SENSOR_BY_PARAM = {k: v[0] for k, v in _SENSOR_TABLE.items()}
+
+
+def _sensor_serials_from_source(src_ds) -> dict:
+    """
+    Pull real sensor serial numbers out of the source NetCDF global attributes.
+
+    step1 carries the hardware block parsed from autoexec.mi through to the L0/L1
+    globals as dict-like strings, e.g.
+        ctd      = {'make': 'Seabird', 'model': 'SlocumCTD', 'serial': '9507'}
+        oxygen   = {'make': 'AADI',    'model': 'Optode4831', 'serial': '665'}
+        optics   = {'make': 'Wetlabs', 'model': 'FLBBCDSLC',  'serial': '5059'}
+    Only the SERIAL is taken from here. 'make'/'model' in these attributes are
+    free text ("Seabird", "AADI", "FLBBCDSLC") and are NOT valid entries in EGO
+    reference tables 26/27, so the controlled-vocabulary values from
+    _SENSOR_TABLE are kept for those two fields.
+    """
+    import ast
+    out = {}
+    for attr_name, key in (("ctd", "ctd"), ("oxygen", "optode"),
+                           ("optics", "optics"), ("pressure", "pres")):
+        raw = src_ds.attrs.get(attr_name)
+        if not raw:
+            continue
+        try:
+            info = raw if isinstance(raw, dict) else ast.literal_eval(str(raw))
+            serial = str(info.get("serial", "")).strip()
+            if serial:
+                out[key] = serial
+        except (ValueError, SyntaxError):
+            continue
+    return out
+
+
+def _build_sensor_rows(meta: dict, param_list: list, serials: dict = None) -> list:
+    """
+    Build the N_SENSOR rows for exactly the parameters this file actually
+    carries, de-duplicated and order-stable. A deployment without an optode
+    gets no OPTODE_DOXY row rather than a phantom one.
+
+    Serial numbers are resolved in priority order:
+      1. deployment.yml metadata (meta dict) — explicit override
+      2. serials dict (from _sensor_serials_from_source) — parsed from
+         the source NetCDF's global attributes (autoexec.mi hardware block)
+      3. Empty string (unknown)
+    """
+    if serials is None:
+        serials = {}
+    rows, seen = [], set()
+    for p in param_list:
+        entry = _SENSOR_TABLE.get(p)
+        if entry is None:
+            continue
+        name, maker, model, key = entry
+        if name in seen:
+            continue
+        seen.add(name)
+        # Priority: deployment.yml > source NetCDF globals > empty
+        serial = str(meta.get(f"{key}_serial", "")) or serials.get(key, "")
+        rows.append({
+            "name":   name,
+            "maker":  meta.get(f"{key}_maker", maker),
+            "model":  meta.get(f"{key}_model", model),
+            "serial": serial,
+        })
+    if not rows:
+        rows.append({"name": "UNKNOWN", "maker": "UNKNOWN",
+                     "model": "UNKNOWN", "serial": ""})
+    return rows
+
+
+def _add_sensor_param_tables(deploy_meta, data_vars, param_list, src_ds=None):
     """
     Add SENSOR_* and PARAMETER_* metadata arrays.
-    Reads sensor info from deployment.yml metadata section.
-    Falls back to generic strings when not available.
+
+    Sensor names/makers/models come from EGO reference tables 25/26/27 via
+    _SENSOR_TABLE; deployment.yml may override any of them (e.g. with the real
+    serials parsed from autoexec.mi). If src_ds is provided, serial numbers
+    are also pulled from its global attributes as a fallback.
     """
     meta = deploy_meta.get("metadata", {})
-
-    # Sensor definitions — extend from deployment.yml when available
-    sensors = [
-        {
-            "name":   meta.get("ctd_sensor_name", "CTD"),
-            "maker":  meta.get("ctd_maker", "Sea-Bird Scientific"),
-            "model":  meta.get("ctd_model", "GPCTD"),
-            "serial": meta.get("ctd_serial", ""),
-        },
-        {
-            "name":   meta.get("optode_sensor_name", "AANDERAA_OPTODE"),
-            "maker":  meta.get("optode_maker", "Aanderaa"),
-            "model":  meta.get("optode_model", "4831"),
-            "serial": meta.get("optode_serial", ""),
-        },
-        {
-            "name":   meta.get("optics_sensor_name", "ECO_FLBBCD"),
-            "maker":  meta.get("optics_maker", "Sea-Bird Scientific"),
-            "model":  meta.get("optics_model", "FLBBCD"),
-            "serial": meta.get("optics_serial", ""),
-        },
-    ]
-    n_s = len(sensors)
+    serials = _sensor_serials_from_source(src_ds) if src_ds is not None else {}
+    sensors = _build_sensor_rows(meta, param_list, serials)
 
     data_vars["SENSOR"] = xr.DataArray(
         _str_array([s["name"] for s in sensors], 32),
@@ -485,14 +580,10 @@ def _add_sensor_param_tables(deploy_meta, data_vars, param_list):
         attrs={"long_name": "Serial number of the sensor", "_FillValue": " "})
 
     n_p = len(param_list)
-    # PARAMETER_SENSOR maps each parameter to which sensor provides it
-    _param_sensor_map = {
-        "PRES": "CTD", "TEMP": "CTD", "PSAL": "CTD", "CNDC": "CTD",
-        "DOXY": "AANDERAA_OPTODE",
-        "CHLA": "ECO_FLBBCD", "CDOM": "ECO_FLBBCD", "BBP700": "ECO_FLBBCD",
-        "TURBIDITY": "ECO_FLBBCD",
-    }
-    param_sensors = [_param_sensor_map.get(p, "CTD") for p in param_list]
+    # PARAMETER_SENSOR must name a table-25 sensor, and every name used here
+    # must also appear in the SENSOR array above — _build_sensor_rows derives
+    # both from _SENSOR_TABLE so the two cannot drift apart.
+    param_sensors = [_ego_sensor_for_param(p) for p in param_list]
 
     data_vars["PARAMETER"] = xr.DataArray(
         _str_array(param_list, 64),
@@ -549,14 +640,27 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
                 dens_kg_per_L = density / 1000.0
                 valid = np.isfinite(raw_vals) & np.isfinite(dens_kg_per_L) & (dens_kg_per_L > 0.5)
                 converted = raw_vals.copy()
-                converted[valid] = raw_vals[valid] / dens_kg_per_L[valid].astype(np.float32)
+                converted[valid] = (raw_vals[valid] / dens_kg_per_L[valid]).astype(np.float32)
                 converted[~valid] = fill
-                # DEBUG: confirm division actually happened
-                print(f"  DEBUG DOXY conversion:")
-                print(f"    density sample (kg/m3): {density[:5]}")
-                print(f"    oxygen_raw sample (umol/L): {raw_vals[:5]}")
-                print(f"    converted sample (umol/kg): {converted[:5]}")
-                print(f"    n_valid_for_conversion: {valid.sum()}")
+                # Numeric proof, at the point of division, that it is applied.
+                # Sample the first indices where density AND oxygen are BOTH
+                # finite: the leading rows of a deployment are typically NaN, so
+                # a naive array[:5] prints all-NaN and makes a perfectly working
+                # conversion look like a no-op. That sampling artefact is what
+                # made this read as "broken" before.
+                #
+                # The expected effect is small BY CONSTRUCTION: seawater density
+                # is ~1.02-1.03 kg/L, so umol/L -> umol/kg only moves values by
+                # ~2-3%. Ranges that look "unchanged to 3 significant figures"
+                # are the correct result, not evidence of a missing division.
+                sample = np.where(valid)[0][:5]
+                print(f"  DOXY umol/L -> umol/kg  (converted {int(valid.sum())} "
+                      f"of {raw_vals.size} points):")
+                for i in sample:
+                    factor = (raw_vals[i] / converted[i]) if converted[i] != 0 else np.nan
+                    print(f"    idx={i:<8d} density={density[i]:10.4f} kg/m3   "
+                          f"raw={raw_vals[i]:10.4f} umol/L -> "
+                          f"{converted[i]:10.4f} umol/kg   (/{factor:.5f})")
                 raw_vals = converted
             else:
                 print(f"  WARNING: density not available — DOXY conversion skipped")
@@ -597,7 +701,17 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
         if qc_internal in src_ds:
             qc_vals = src_ds[qc_internal].values.astype(np.int8)
         else:
-            # No QC available — flag 0 (not performed)
+            # Flag 0 ("no_qc_performed", EGO reference table 2.1) everywhere is
+            # CORRECT for the parameters that land here, not an oversight:
+            #   CNDC      — back-calculated from PSAL/TEMP/PRES; this pipeline
+            #               runs no dedicated conductivity test, so it has no
+            #               independent QC verdict to report.
+            #   TURBIDITY — no dedicated turbidity test exists in the RTQC suite.
+            # Both also reach TURBIDITY_ADJUSTED_QC through the same path.
+            # Do NOT "fix" these to flag 1 (good_data): asserting good_data for a
+            # test that was never run is a false provenance claim. If a real test
+            # is added later, populate <var>_QC upstream in step23 and this
+            # branch stops being taken automatically.
             qc_vals = np.zeros(n, dtype=np.int8)
         qc_attrs = dict(_QC_ATTRS)
         data_vars[f"{ego}_QC"] = xr.DataArray(qc_vals, dims=["TIME"], attrs=qc_attrs)
@@ -608,43 +722,70 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
             continue
 
         adj_vals = np.full(n, fill, dtype=np.float32)
+        adj_qc   = qc_vals.copy()
+
         if adj_src and adj_src in src_ds:
-            adj_raw = src_ds[adj_src].values.astype(np.float32).copy()
-            # Sanity check: adjusted values should not have a wider range than
-            # the source variable's own physical limits. If they do, it means
-            # the adjusted source is from a different (uncropped) dataset.
-            # In that case fall back to using the raw values.
-            if internal in src_ds:
-                raw_finite = src_ds[internal].values
-                raw_finite = raw_finite[np.isfinite(raw_finite)]
-                adj_finite = adj_raw[np.isfinite(adj_raw)]
-                if len(raw_finite) > 0 and len(adj_finite) > 0:
-                    raw_span = float(raw_finite.max() - raw_finite.min())
-                    adj_span = float(adj_finite.max() - adj_finite.min())
-                    # If adjusted span is >20% wider than raw, it's pulling
-                    # from the wrong (uncropped) source — use raw instead
-                    if adj_span > raw_span * 1.20:
-                        print(f"  WARNING: {ego}_ADJUSTED span ({adj_span:.2f}) "
-                              f"wider than raw ({raw_span:.2f}) — "
-                              f"using raw values as adjusted (adjusted source "
-                              f"'{adj_src}' appears uncropped)")
-                        adj_raw = src_ds[internal].values.astype(np.float32).copy()
+            adj_raw  = src_ds[adj_src].values.astype(np.float32).copy()
+            raw_src  = src_ds[internal].values
+
+            # step23 builds the *_processed / *_corrected sources from the
+            # pre-mask working copy, then writes the despike/range masks back
+            # into the RAW variable afterwards. The adjusted source therefore
+            # stays finite at points RTQC later rejected — on 1131 that is 4083
+            # extra points for temperature and 10591 for salinity, all carrying
+            # QC flag 9. Published unmasked, _ADJUSTED covers MORE points and a
+            # WIDER range than the parameter it adjusts, which is backwards.
+            #
+            # Fix the provenance rather than the symptom: restrict _ADJUSTED to
+            # the raw parameter's own good footprint — finite raw value, and a
+            # QC flag that is neither bad (4) nor missing (9). (The previous
+            # 20%-span heuristic silently swapped in raw values instead; for
+            # TEMP it missed by 0.04 units and never fired at all.)
+            good = (np.isfinite(raw_src) & np.isfinite(adj_raw)
+                    & ~np.isin(qc_vals, [4, 9]))
+
             if needs_dc and density is not None:
+                # Same umol/L -> umol/kg conversion as the base parameter, so
+                # DOXY and DOXY_ADJUSTED stay on a common scale.
                 dens_kg_per_L = density / 1000.0
-                valid = np.isfinite(adj_raw) & np.isfinite(dens_kg_per_L) & (dens_kg_per_L > 0.5)
-                adj_raw[valid]  = adj_raw[valid] / dens_kg_per_L[valid].astype(np.float32)
-                adj_raw[~valid] = fill
-            adj_raw[~np.isfinite(adj_raw)] = fill
-            adj_vals = adj_raw
+                good &= np.isfinite(dens_kg_per_L) & (dens_kg_per_L > 0.5)
+                adj_raw[good] = (adj_raw[good]
+                                 / dens_kg_per_L[good]).astype(np.float32)
+
+            # Residual Savitzky-Golay overshoot: fitting a 2nd-order polynomial
+            # near profile edges and NaN gaps can push a small number of points
+            # beyond anything the instrument actually measured (1131: 97 pts for
+            # TEMP, 17 PSAL, 13 DOXY — all <0.06%). An adjustment must not
+            # invent values outside the observed envelope, so flag those bad in
+            # _ADJUSTED_QC and withhold the value instead of publishing it.
+            if good.any():
+                raw_good = raw_src[np.isfinite(raw_src)]
+                lo, hi = float(raw_good.min()), float(raw_good.max())
+                if needs_dc and density is not None:
+                    dkl = (density / 1000.0)
+                    ok = np.isfinite(dkl) & (dkl > 0.5) & np.isfinite(raw_src)
+                    if ok.any():
+                        conv_raw = raw_src[ok] / dkl[ok]
+                        lo, hi = float(conv_raw.min()), float(conv_raw.max())
+                oor = good & ((adj_raw < lo) | (adj_raw > hi))
+                if oor.any():
+                    print(f"  {ego}_ADJUSTED: {int(oor.sum())} point(s) outside the "
+                          f"raw observed range [{lo:.4f}, {hi:.4f}] "
+                          f"(smoother overshoot) — flagged _ADJUSTED_QC=4")
+                    good &= ~oor
+                    adj_qc[oor] = np.int8(4)
+
+            adj_vals = np.where(good, adj_raw, fill).astype(np.float32)
+            # Points dropped because the raw parameter was bad/missing carry the
+            # raw flag already (4 or 9); nothing further to set there.
 
         adj_attrs = dict(var_attrs)
         adj_attrs["long_name"] = info.get("long_name", ego) + " adjusted"
         data_vars[f"{ego}_ADJUSTED"] = xr.DataArray(adj_vals, dims=["TIME"],
                                                       attrs=adj_attrs)
 
-        # _ADJUSTED_QC: use raw QC if no separate adjusted QC exists
         data_vars[f"{ego}_ADJUSTED_QC"] = xr.DataArray(
-            qc_vals.copy(), dims=["TIME"], attrs=dict(_QC_ATTRS))
+            adj_qc, dims=["TIME"], attrs=dict(_QC_ATTRS))
 
         # _ADJUSTED_ERROR: fill with fill value (no formal error estimate)
         err_attrs = {
@@ -698,7 +839,7 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     written_params = _add_science_vars(src_ds, data_vars, is_l1, n)
 
     # Sensor + parameter metadata tables
-    _add_sensor_param_tables(deploy_meta, data_vars, written_params)
+    _add_sensor_param_tables(deploy_meta, data_vars, written_params, src_ds=src_ds)
 
     # ── Assemble Dataset ─────────────────────────────────────────────────────
     # Determine dimension sizes from data_vars
