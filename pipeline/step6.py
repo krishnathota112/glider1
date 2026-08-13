@@ -89,9 +89,9 @@ def plot_track(l1_path, l0_path=None, plot_path=None):
 
     ds = xr.open_dataset(l1_path)
 
-    lat = ds["latitude"].values  if "latitude"  in ds else None
-    lon = ds["longitude"].values if "longitude" in ds else None
-    t   = ds["time"].values
+    lat, _ = _get_var(ds, "latitude", "LATITUDE")
+    lon, _ = _get_var(ds, "longitude", "LONGITUDE")
+    t   = _get_time(ds)
 
     if lat is None or lon is None:
         print("  WARNING: no lat/lon in L1 — skipping track map")
@@ -363,14 +363,26 @@ def plot_data_coverage(l0_path, l1_path, plot_path=None):
     vars_to_show = [
         "temperature", "salinity", "pressure",
         "oxygen_concentration", "chlorophyll", "cdom", "backscatter_700",
+        "TEMP", "PSAL", "PRES", "DOXY", "CHLA", "CDOM", "BBP700",
     ]
-    vars_present = [v for v in vars_to_show if v in ds]
+    vars_present = [v for v in vars_to_show if v in ds
+                    and not v.endswith("_QC")]
+    # Deduplicate — prefer canonical names but keep whichever is present
+    seen_base = set()
+    vars_deduped = []
+    for v in vars_present:
+        base = v.lower().replace("_concentration","").replace("backscatter_700","bbp700")
+        if base not in seen_base:
+            seen_base.add(base)
+            vars_deduped.append(v)
+    vars_present = vars_deduped
+
     if not vars_present:
         print("  WARNING: no variables found — skipping coverage matrix")
         ds.close()
         return None
 
-    t = ds.time.values.astype("datetime64[D]")
+    t = _get_time(ds).astype("datetime64[D]")
     days = np.unique(t)
     n_days = len(days)
     n_vars = len(vars_present)

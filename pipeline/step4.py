@@ -125,21 +125,31 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
         ds_masked = ds.copy(deep=True)
         for qv in qc_vars:
             base_v = qv.replace("_QC", "")
+            # Skip dimension coordinates — they can't be overwritten in-place
+            if base_v in ds_masked.dims:
+                continue
             if base_v in ds_masked:
                 qc = ds_masked[qv].values.astype(int)
                 bad = (qc == 3) | (qc == 4)
                 vals = ds_masked[base_v].values.copy().astype(float)
                 vals[bad] = np.nan
-                ds_masked[base_v].values = vals
+                ds_masked[base_v] = xr.DataArray(vals,
+                                                  dims=ds_masked[base_v].dims,
+                                                  attrs=ds_masked[base_v].attrs)
     else:
         ds_masked = ds
 
+    # Resolve the time dimension name — support both 'time' and 'TIME'
+    _time_dim = "TIME" if "TIME" in ds_masked.dims else "time"
+
     for p_num in unique:
         mask = (ds_masked[_pi_var].values == p_num)
-        prof = ds_masked.isel(time=mask)
+        prof = ds_masked.isel({_time_dim: mask})
         prof.attrs["profile_id"] = int(p_num)
-        if "profile_direction" in prof:
-            d = float(np.nanmean(prof.profile_direction.values))
+        _pd_var = ("profile_direction" if "profile_direction" in prof
+                   else "PHASE" if "PHASE" in prof else None)
+        if _pd_var:
+            d = float(np.nanmean(prof[_pd_var].values))
             prof.attrs["direction"] = ("climb" if d > 0
                                        else "dive" if d < 0 else "unknown")
         out = os.path.join(out_dir, f"{base_name}_profile_{int(p_num):04d}.nc")
@@ -294,9 +304,13 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
     gridded  = {var: [] for var in vars_to_grid}
     p_times  = []
 
+    # Resolve time dimension name
+    _time_dim = "TIME" if "TIME" in ds.dims else "time"
+    _time_coord = "time" if "time" in ds.coords else "TIME"
+
     for i, p_num in enumerate(unique):
         mask = (pi == p_num)
-        t_arr = ds.time.values[mask].astype("datetime64[s]").astype(float)
+        t_arr = ds[_time_coord].values[mask].astype("datetime64[s]").astype(float)
         p_times.append(float(np.nanmean(t_arr)) if len(t_arr) > 0 else np.nan)
 
         d_arr = ds[_depth_var].values[mask]
