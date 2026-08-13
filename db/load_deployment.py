@@ -2,38 +2,12 @@
 """
 load_deployment.py — ingest EGO 1.5 NetCDF files into SQLite.
 
-Reads the EGO-format L0 and L1 NetCDF files produced by step_ego.py and loads
-them into the four-table schema (meta, observation, core, bgc).
+Schema: Pattern A (wide core + tall bgc)
+  core: one row per observation with fixed columns (TEMP, TEMP_QC, PSAL, ...)
+  bgc:  one row per (observation_id, variable_name) for open-ended sensors
 
-The EGO file is the SINGLE source of truth for variable names. The PARAMETER
-array in each file is read to discover which science variables exist — no
-hardcoded mapping is maintained here. This eliminates the drift risk of having
-two independent name-translation layers.
-
-Value semantics
----------------
-    value             EGO <VAR> at that timestamp (fill -> NULL)
-    qc_flag           <VAR>_QC  (EGO ref table 2.1: 0 no_qc, 1 good, 4 bad, 9 missing)
-    value_adjusted    <VAR>_ADJUSTED, NULL when fill or not computed
-    adjusted_qc_flag  <VAR>_ADJUSTED_QC, NULL when fill or not computed
-
-distance_over_ground
---------------------
-Computed from TIME_GPS / LATITUDE_GPS / LONGITUDE_GPS (real GPS surface fixes
-only), with impossible-speed legs (>3 m/s) excluded. Stored in meta as a
-deployment-level summary.
-
-Idempotency
------------
-observation_id = deterministic 63-bit hash of (glider_id, timestamp).
-Every write is ON CONFLICT DO UPDATE — re-running overwrites, never duplicates.
-
-Usage
------
-    python -m db.load_deployment <ego_output_dir> [--db glider_rtqc.db]
-    python -m db.load_deployment --ego-l1 /path/to/L1_EGO.nc [--ego-l0 /path/L0_EGO.nc]
+The EGO file is the SINGLE source of truth for variable names and values.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -48,78 +22,22 @@ from datetime import datetime, timezone
 import numpy as np
 
 
-# ============================================================
-#  Constants
-# ============================================================
-
-# Core (physical/CTD) vs BGC classification. Anything not listed here
-# defaults to BGC with a note — so a future sensor never silently drops.
-CORE_PARAMS = {"TEMP", "PSAL", "PRES", "CNDC"}
-# Everything else in PARAMETER is BGC by default.
-
+# ── Constants ────────────────────────────────────────────────────────────────
+CORE_PARAMS = ("PRES", "TEMP", "PSAL", "CNDC")
+FILL_FLOAT = 99999.0
+FILL_TIME = 9999999999.0
+BATCH_SIZE = 50_000
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
-BATCH_SIZE = 100_000
-
-# EGO fill value for float variables
-FILL_VALUE = 99999.0
-
-# Safe identifier regex for generated SQL
-_SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-# ============================================================
-#  Deterministic IDs
-# ============================================================
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def make_observation_id(glider_id: str, timestamp_iso: str) -> int:
-    """
-    Deterministic 63-bit observation id from (glider_id, timestamp).
-
-    SHA-256 of "glider_id|timestamp", first 8 bytes, masked to 63 bits so it
-    is always positive and fits SQLite's signed 64-bit INTEGER PRIMARY KEY.
-    """
-    digest = hashlib.sha256(f"{glider_id}|{timestamp_iso}".encode("utf-8")).digest()
+    digest = hashlib.sha256(f"{glider_id}|{timestamp_iso}".encode()).digest()
     return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
-# ============================================================
-#  EGO file discovery
-# ============================================================
-
-def find_ego_files(ego_dir: str) -> dict:
-    """
-    Locate EGO L0 and L1 NetCDF files in an EGO-timeseries/ directory.
-
-    Convention: filenames contain '_L0_EGO' or '_L1_EGO' (or just '_EGO'
-    without L0/L1 for single-file deployments).
-    """
-    ego_dir = os.path.abspath(ego_dir)
-    result = {"ego_dir": ego_dir, "ego_l0": None, "ego_l1": None}
-
-    if not os.path.isdir(ego_dir):
-        return result
-
-    nc_files = [f for f in os.listdir(ego_dir) if f.endswith(".nc")]
-    for f in sorted(nc_files):
-        low = f.lower()
-        path = os.path.join(ego_dir, f)
-        if "_l1" in low:
-            result["ego_l1"] = path
-        elif "_l0" in low:
-            result["ego_l0"] = path
-        elif result["ego_l1"] is None:
-            # Single EGO file without L0/L1 suffix — treat as L1 if it has QC
-            result["ego_l1"] = path
-
-    return result
-
-
-# ============================================================
-#  GPS distance computation
-# ============================================================
-
 def _haversine_km(lat1, lon1, lat2, lon2):
-    """Haversine distance in km between two arrays of coordinates."""
     R = 6371.0
     dlat = np.radians(lat2 - lat1)
     dlon = np.radians(lon2 - lon1)
@@ -129,130 +47,107 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return R * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
 
 
-def compute_distance_from_gps(nc) -> float | None:
-    """
-    Compute total distance over ground from GPS fix positions only.
-
-    Uses TIME_GPS / LATITUDE_GPS / LONGITUDE_GPS arrays. Filters out:
-      - Fill values (99999)
-      - Legs with implied speed > 3 m/s (10.8 km/h) — physically impossible
-        for a Slocum glider, indicates a data gap or bad fix.
-
-    Returns distance in km, or None if insufficient data.
-    """
-    if "TIME_GPS" not in nc.variables:
-        return None
-
-    t_gps = np.asarray(nc.variables["TIME_GPS"][:], dtype=np.float64)
-    lat_gps = np.asarray(nc.variables["LATITUDE_GPS"][:], dtype=np.float64)
-    lon_gps = np.asarray(nc.variables["LONGITUDE_GPS"][:], dtype=np.float64)
-
-    # Filter valid fixes
-    valid = (
-        np.isfinite(lat_gps) & np.isfinite(lon_gps) & np.isfinite(t_gps)
-        & (np.abs(lat_gps) < 90.1) & (np.abs(lon_gps) < 180.1)
-    )
-    if valid.sum() < 2:
-        return None
-
-    lat_v = lat_gps[valid]
-    lon_v = lon_gps[valid]
-    t_v = t_gps[valid]
-
-    # Sort by time (should already be, but be safe)
-    order = np.argsort(t_v)
-    lat_v, lon_v, t_v = lat_v[order], lon_v[order], t_v[order]
-
-    # Compute leg distances and speeds
-    dists = _haversine_km(lat_v[:-1], lon_v[:-1], lat_v[1:], lon_v[1:])
-    dt_hours = np.diff(t_v) / 3600.0
-
-    # Filter: max glider speed is ~1 m/s horizontal => 3.6 km/h.
-    # Use 3 m/s (10.8 km/h) as a generous upper bound.
-    speed_kmh = np.where(dt_hours > 0.001, dists / dt_hours, np.inf)
-    good_legs = speed_kmh <= 10.8
-
-    if good_legs.sum() == 0:
-        return None
-
-    return float(np.sum(dists[good_legs]))
-
-
-# ============================================================
-#  EGO file reading helpers
-# ============================================================
-
 def _read_char_array(nc, var_name: str) -> list[str]:
-    """Read an (N, STRING_LEN) char array and return list of stripped strings."""
     if var_name not in nc.variables:
         return []
     arr = nc.variables[var_name][:]
-    result = []
-    for i in range(arr.shape[0]):
-        row = "".join(str(c) for c in arr[i]).rstrip()
-        result.append(row)
+    return ["".join(str(c) for c in arr[i]).strip() for i in range(arr.shape[0])]
+
+
+def _float_or_none(val) -> float | None:
+    if np.isfinite(val) and abs(val) < FILL_FLOAT - 1:
+        return float(val)
+    return None
+
+
+def _int_or_none(val, fill=-128) -> int | None:
+    v = int(val)
+    return v if v != fill else None
+
+
+# ── GPS distance ─────────────────────────────────────────────────────────────
+
+def compute_distance_from_gps(nc) -> float | None:
+    if "TIME_GPS" not in nc.variables:
+        return None
+    t = np.asarray(nc.variables["TIME_GPS"][:], dtype=np.float64)
+    lat = np.asarray(nc.variables["LATITUDE_GPS"][:], dtype=np.float64)
+    lon = np.asarray(nc.variables["LONGITUDE_GPS"][:], dtype=np.float64)
+    valid = np.isfinite(t) & np.isfinite(lat) & np.isfinite(lon) & (t < FILL_TIME - 1)
+    if valid.sum() < 2:
+        return None
+    lat_v, lon_v, t_v = lat[valid], lon[valid], t[valid]
+    order = np.argsort(t_v)
+    lat_v, lon_v, t_v = lat_v[order], lon_v[order], t_v[order]
+    dists = _haversine_km(lat_v[:-1], lon_v[:-1], lat_v[1:], lon_v[1:])
+    dt_h = np.diff(t_v) / 3600.0
+    speed = np.where(dt_h > 0.001, dists / dt_h, np.inf)
+    good = speed <= 10.8  # 3 m/s max
+    return float(dists[good].sum()) if good.any() else None
+
+
+def _build_gps_fix_set(nc) -> set:
+    if "TIME_GPS" not in nc.variables:
+        return set()
+    t = np.asarray(nc.variables["TIME_GPS"][:], dtype=np.float64)
+    valid = np.isfinite(t) & (t < FILL_TIME - 1)
+    return set(np.round(t[valid]).astype(np.int64))
+
+
+# ── File discovery ───────────────────────────────────────────────────────────
+
+def find_ego_files(ego_dir: str, verbose: bool = True) -> dict:
+    """
+    Locate the EGO L0 and L1 NetCDF in a directory.
+
+    Classification is by the data the file actually carries, not by filename:
+    an L1 has QC flags with at least one non-zero verdict and *_ADJUSTED
+    variables, an L0 does not. Filenames in this pipeline have varied
+    (`_L1_EGO.nc`, `_2024_EGO.nc`), so name-sniffing alone silently picked up a
+    stale file from an earlier run once already.
+
+    When several files classify the same way the most recently modified one
+    wins and the others are reported, so a leftover never quietly becomes the
+    source of truth.
+    """
+    import netCDF4
+
+    ego_dir = os.path.abspath(ego_dir)
+    result = {"ego_l0": None, "ego_l1": None}
+    if not os.path.isdir(ego_dir):
+        return result
+
+    l0_cands, l1_cands = [], []
+    for f in sorted(os.listdir(ego_dir)):
+        if not f.endswith(".nc"):
+            continue
+        path = os.path.join(ego_dir, f)
+        try:
+            nc = netCDF4.Dataset(path)
+            nc.set_auto_mask(False)
+            try:
+                has_adjusted = any(v.endswith("_ADJUSTED") for v in nc.variables)
+            finally:
+                nc.close()
+        except OSError:
+            continue
+        (l1_cands if has_adjusted else l0_cands).append(path)
+
+    for key, cands in (("ego_l1", l1_cands), ("ego_l0", l0_cands)):
+        if not cands:
+            continue
+        cands.sort(key=os.path.getmtime, reverse=True)
+        result[key] = cands[0]
+        if len(cands) > 1 and verbose:
+            print(f"  NOTE: {len(cands)} candidate {key} files in {ego_dir}; "
+                  f"using the newest ({os.path.basename(cands[0])}). "
+                  f"Ignored: {', '.join(os.path.basename(c) for c in cands[1:])}")
     return result
 
 
-def _var_array(nc, name: str, n: int) -> np.ndarray:
-    """Read a TIME-dimensioned variable, replacing fill with NaN."""
-    if name not in nc.variables:
-        return np.full(n, np.nan, dtype=np.float64)
-    arr = np.asarray(nc.variables[name][:], dtype=np.float64)
-    arr[arr >= FILL_VALUE - 1] = np.nan
-    return arr
+# ── Database ─────────────────────────────────────────────────────────────────
 
-
-def _qc_array(nc, name: str, n: int) -> np.ndarray:
-    """Read a QC variable as int, with fill -> -1."""
-    qc_name = f"{name}_QC"
-    if qc_name not in nc.variables:
-        return np.full(n, -1, dtype=np.int16)
-    arr = np.asarray(nc.variables[qc_name][:], dtype=np.int16)
-    # int8 fill is -128
-    arr[arr == -128] = -1
-    return arr
-
-
-def discover_parameters(nc) -> list[str]:
-    """
-    Read the PARAMETER array from the EGO file to discover which science
-    variables this deployment carries. This is the single source of truth.
-    """
-    return _read_char_array(nc, "PARAMETER")
-
-
-def classify_param(param: str) -> str:
-    """Classify an EGO parameter as 'core' or 'bgc'."""
-    if param in CORE_PARAMS:
-        return "core"
-    return "bgc"
-
-
-# ============================================================
-#  GPS fix matching
-# ============================================================
-
-def _build_gps_fix_set(nc) -> set:
-    """
-    Build a set of epoch timestamps (as int64 seconds) that are real GPS fixes.
-    Used to mark observation rows with has_gps_fix=1.
-    """
-    if "TIME_GPS" not in nc.variables:
-        return set()
-    t_gps = np.asarray(nc.variables["TIME_GPS"][:], dtype=np.float64)
-    # GPS fill value is 9999999999 (not 99999)
-    gps_fill = 9999999999.0
-    valid = np.isfinite(t_gps) & (t_gps < gps_fill - 1)
-    # Round to nearest second for matching against TIME
-    return set(np.round(t_gps[valid]).astype(np.int64))
-
-
-# ============================================================
-#  Database helpers
-# ============================================================
-
-def _connect(db_path: str) -> sqlite3.Connection:
+def _connect(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -262,12 +157,116 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def apply_schema(conn: sqlite3.Connection) -> None:
-    if not os.path.exists(SCHEMA_PATH):
-        raise FileNotFoundError(f"schema not found: {SCHEMA_PATH}")
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as fh:
-        conn.executescript(fh.read())
+def _apply_schema(conn):
+    with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+        conn.executescript(f.read())
 
+
+# ── Wide table generation ────────────────────────────────────────────────────
+# Both core and bgc are wide: four real columns per parameter. The column list
+# comes from the EGO PARAMETER array, so the tables are readable in a SQL
+# browser without pivoting AND a deployment with a new sensor still loads.
+
+def _col_names(param: str) -> tuple[str, str, str, str]:
+    """The four column names for one EGO parameter."""
+    return (param, f"{param}_QC", f"{param}_ADJUSTED", f"{param}_ADJUSTED_QC")
+
+
+def _safe_param(param: str) -> bool:
+    """Only accept identifiers safe to interpolate into DDL."""
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", param))
+
+
+def _create_wide_table(conn, table: str, params: list[str]) -> None:
+    """CREATE TABLE <table> with one named column set per parameter."""
+    cols = [
+        "observation_id   INTEGER PRIMARY KEY "
+        "REFERENCES observation(observation_id) ON DELETE CASCADE"
+    ]
+    for p in params:
+        v, q, a, aq = _col_names(p)
+        cols.append(f'"{v}"  REAL')
+        cols.append(f'"{q}"  INTEGER')
+        cols.append(f'"{a}"  REAL')
+        cols.append(f'"{aq}" INTEGER')
+    conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" (\n  '
+                 + ",\n  ".join(cols) + "\n)")
+
+    # One index per parameter's QC column: "all good TEMP" is the dominant
+    # filter in the dashboard and in downstream analysis.
+    for p in params:
+        conn.execute(f'CREATE INDEX IF NOT EXISTS "idx_{table}_{p}_qc" '
+                     f'ON "{table}" ("{p}_QC")')
+
+
+def _wide_upsert(table: str, params: list[str]) -> str:
+    """INSERT ... ON CONFLICT DO UPDATE across every generated column."""
+    cols, sets = ["observation_id"], []
+    for p in params:
+        for c in _col_names(p):
+            cols.append(c)
+            sets.append(f'"{c}" = excluded."{c}"')
+    placeholders = ",".join("?" * len(cols))
+    quoted = ", ".join(f'"{c}"' for c in cols)
+    return (f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})\n'
+            f'ON CONFLICT(observation_id) DO UPDATE SET\n  '
+            + ",\n  ".join(sets))
+
+
+def _create_views(conn, core_params: list[str], bgc_params: list[str]) -> None:
+    """
+    Rebuild the convenience views for whichever parameters this file carries.
+
+    Dropped and recreated on every load because the column list is
+    deployment-dependent; a view left over from a deployment with a different
+    sensor suite would reference columns that no longer exist.
+    """
+    for name in ("core_full", "bgc_full", "core_qc_summary",
+                 "bgc_qc_summary", "measurement_full"):
+        conn.execute(f"DROP VIEW IF EXISTS {name}")
+
+    for table, params in (("core", core_params), ("bgc", bgc_params)):
+        if not params:
+            continue
+        sel = ", ".join(f't."{c}"' for p in params for c in _col_names(p))
+        conn.execute(f"""
+CREATE VIEW {table}_full AS
+SELECT o.glider_id, o.timestamp, o.latitude, o.longitude,
+       o.phase, o.phase_number, o.has_gps_fix, {sel}
+  FROM observation o
+  JOIN "{table}" t ON t.observation_id = o.observation_id""")
+
+        # Per-parameter QC rollup. n_values (measurements) and n_flagged (QC
+        # verdicts) are counted separately on purpose: a point flagged 4 or 9
+        # has a verdict but no published value, so pct_good is a share of
+        # FLAGGED points. Counting flags against n_values produced
+        # good+bad+missing > n_values in an earlier version of this view.
+        branches = []
+        for p in params:
+            v, q, a, _ = _col_names(p)
+            branches.append(f"""
+SELECT o.glider_id, '{p}' AS variable_name,
+       COUNT(*)                    AS n_total,
+       COUNT(t."{v}")              AS n_values,
+       COUNT(t."{q}")              AS n_flagged,
+       SUM(t."{q}" = 1)            AS n_good,
+       SUM(t."{q}" = 2)            AS n_probably_good,
+       SUM(t."{q}" = 3)            AS n_probably_bad,
+       SUM(t."{q}" = 4)            AS n_bad,
+       SUM(t."{q}" = 9)            AS n_missing,
+       SUM(t."{q}" = 0)            AS n_no_qc,
+       COUNT(t."{a}")              AS n_adjusted,
+       CASE WHEN COUNT(t."{q}") > 0
+            THEN ROUND(100.0 * SUM(t."{q}" IN (1,2)) / COUNT(t."{q}"), 2)
+            END                    AS pct_good
+  FROM observation o
+  JOIN "{table}" t ON t.observation_id = o.observation_id
+ GROUP BY o.glider_id""")
+        conn.execute(f"CREATE VIEW {table}_qc_summary AS"
+                     + "\nUNION ALL".join(branches))
+
+
+# ── SQL statements ───────────────────────────────────────────────────────────
 
 META_UPSERT = """
 INSERT INTO meta (glider_id, deployment_name, deployment_start, deployment_end,
@@ -281,306 +280,163 @@ VALUES (:glider_id, :deployment_name, :deployment_start, :deployment_end,
         :data_mode, :institution, :rtqc_tests_applied,
         :processed_at, :ego_l0_path, :ego_l1_path)
 ON CONFLICT(glider_id) DO UPDATE SET
-    deployment_name         = excluded.deployment_name,
-    deployment_start        = excluded.deployment_start,
-    deployment_end          = excluded.deployment_end,
-    max_depth_dbar          = excluded.max_depth_dbar,
-    n_profiles              = excluded.n_profiles,
-    n_observations          = excluded.n_observations,
-    n_gps_fixes             = excluded.n_gps_fixes,
-    distance_over_ground_km = excluded.distance_over_ground_km,
-    pipeline_version        = excluded.pipeline_version,
-    ego_format_version      = excluded.ego_format_version,
-    data_mode               = excluded.data_mode,
-    institution             = excluded.institution,
-    rtqc_tests_applied      = excluded.rtqc_tests_applied,
-    processed_at            = excluded.processed_at,
-    ego_l0_path             = excluded.ego_l0_path,
-    ego_l1_path             = excluded.ego_l1_path
+    deployment_name=excluded.deployment_name, deployment_start=excluded.deployment_start,
+    deployment_end=excluded.deployment_end, max_depth_dbar=excluded.max_depth_dbar,
+    n_profiles=excluded.n_profiles, n_observations=excluded.n_observations,
+    n_gps_fixes=excluded.n_gps_fixes, distance_over_ground_km=excluded.distance_over_ground_km,
+    pipeline_version=excluded.pipeline_version, ego_format_version=excluded.ego_format_version,
+    data_mode=excluded.data_mode, institution=excluded.institution,
+    rtqc_tests_applied=excluded.rtqc_tests_applied, processed_at=excluded.processed_at,
+    ego_l0_path=excluded.ego_l0_path, ego_l1_path=excluded.ego_l1_path
 """
 
-OBSERVATION_UPSERT = """
-INSERT INTO observation (observation_id, glider_id, timestamp, pressure,
+OBS_UPSERT = """
+INSERT INTO observation (observation_id, glider_id, timestamp,
                          latitude, longitude, phase, phase_number,
                          position_qc, has_gps_fix)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+VALUES (?,?,?,?,?,?,?,?,?)
 ON CONFLICT(observation_id) DO UPDATE SET
-    glider_id    = excluded.glider_id,
-    timestamp    = excluded.timestamp,
-    pressure     = excluded.pressure,
-    latitude     = excluded.latitude,
-    longitude    = excluded.longitude,
-    phase        = excluded.phase,
-    phase_number = excluded.phase_number,
-    position_qc  = excluded.position_qc,
-    has_gps_fix  = excluded.has_gps_fix
+    glider_id=excluded.glider_id, timestamp=excluded.timestamp,
+    latitude=excluded.latitude, longitude=excluded.longitude,
+    phase=excluded.phase, phase_number=excluded.phase_number,
+    position_qc=excluded.position_qc, has_gps_fix=excluded.has_gps_fix
 """
 
 
-def _measurement_upsert(table: str) -> str:
-    return f"""
-INSERT INTO {table} (observation_id, variable_name, value, qc_flag,
-                     value_adjusted, adjusted_qc_flag)
-VALUES (?,?,?,?,?,?)
-ON CONFLICT(observation_id, variable_name) DO UPDATE SET
-    value            = excluded.value,
-    qc_flag          = excluded.qc_flag,
-    value_adjusted   = excluded.value_adjusted,
-    adjusted_qc_flag = excluded.adjusted_qc_flag
-"""
+
+# core/bgc upserts are generated per deployment by _wide_upsert(), since the
+# column list depends on which parameters the EGO file carries.
 
 
-def _executemany_batched(conn, sql, rows, batch=BATCH_SIZE) -> int:
-    """
-    Feed rows to executemany in fixed-size chunks.
-    Accepts any iterable (generator OK) — never materialises the full set.
-    """
-    total = 0
-    chunk = []
-    for row in rows:
-        chunk.append(row)
-        if len(chunk) >= batch:
-            conn.executemany(sql, chunk)
-            total += len(chunk)
-            chunk.clear()
-    if chunk:
-        conn.executemany(sql, chunk)
-        total += len(chunk)
-    return total
+# ── Main loader ──────────────────────────────────────────────────────────────
 
-
-def _measurement_rows(nc, obs_ids, param: str, table: str, n: int):
-    """
-    Yield (observation_id, variable_name, value, qc, adjusted, adjusted_qc)
-    for one EGO parameter. Generator — streams one variable at a time.
-    Skips rows where observation_id is None (fill-value timestamps).
-    """
-    values = _var_array(nc, param, n)
-    qc_flags = _qc_array(nc, param, n)
-
-    adj_name = f"{param}_ADJUSTED"
-    adj_values = _var_array(nc, adj_name, n) if adj_name in nc.variables else None
-
-    adj_qc_name = f"{param}_ADJUSTED_QC"
-    adj_qc = None
-    if adj_qc_name in nc.variables:
-        adj_qc = np.asarray(nc.variables[adj_qc_name][:], dtype=np.int16)
-        adj_qc[adj_qc == -128] = -1
-
-    for i in range(n):
-        oid = obs_ids[i]
-        if oid is None:
-            continue
-
-        val = values[i]
-        qc = qc_flags[i]
-        adj_val = adj_values[i] if adj_values is not None else np.nan
-        adj_q = adj_qc[i] if adj_qc is not None else -1
-
-        # Convert NaN/fill -> None for SQLite
-        v = float(val) if np.isfinite(val) else None
-        q = int(qc) if qc >= 0 else None
-        av = float(adj_val) if np.isfinite(adj_val) else None
-        aq = int(adj_q) if adj_q >= 0 else None
-
-        yield (oid, param, v, q, av, aq)
-
-
-def create_wide_views(conn: sqlite3.Connection,
-                      core_names: list[str],
-                      bgc_names: list[str]) -> None:
-    """
-    Build pivoted `wide_core` / `wide_bgc` views with one column set per
-    variable. Regenerated on every load since the column list depends on
-    which parameters the deployment carries.
-    """
-    for table, names in (("core", core_names), ("bgc", bgc_names)):
-        view = f"wide_{table}"
-        conn.execute(f"DROP VIEW IF EXISTS {view}")
-
-        safe = [n for n in sorted(names) if _SAFE_IDENT.match(n)]
-        if not safe:
-            continue
-
-        cols = []
-        for n in safe:
-            cols.append(
-                f'    MAX(CASE WHEN m.variable_name = \'{n}\' '
-                f'THEN m.value END) AS "{n}"')
-            cols.append(
-                f'    MAX(CASE WHEN m.variable_name = \'{n}\' '
-                f'THEN m.value_adjusted END) AS "{n}_ADJUSTED"')
-            cols.append(
-                f'    MAX(CASE WHEN m.variable_name = \'{n}\' '
-                f'THEN m.qc_flag END) AS "{n}_QC"')
-            cols.append(
-                f'    MAX(CASE WHEN m.variable_name = \'{n}\' '
-                f'THEN m.adjusted_qc_flag END) AS "{n}_ADJUSTED_QC"')
-
-        pivot_sql = ",\n".join(cols)
-        conn.execute(f"""
-CREATE VIEW IF NOT EXISTS {view} AS
-SELECT
-    o.observation_id,
-    o.glider_id,
-    o.timestamp,
-    o.pressure,
-    o.latitude,
-    o.longitude,
-    o.phase_number,
-{pivot_sql}
-FROM observation o
-LEFT JOIN {table} m ON m.observation_id = o.observation_id
-GROUP BY o.observation_id
-""")
-
-
-# ============================================================
-#  Main entry point
-# ============================================================
-
-def load_deployment(ego_l1_path: str = None,
-                    ego_l0_path: str = None,
-                    ego_dir: str = None,
-                    db_path: str = "glider_rtqc.db",
-                    glider_id: str = None,
-                    verbose: bool = True) -> dict:
-    """
-    Load one deployment's EGO NetCDF files into the SQLite database.
-
-    Parameters
-    ----------
-    ego_l1_path : direct path to EGO L1 file (preferred — has QC + adjusted)
-    ego_l0_path : direct path to EGO L0 file (optional, for raw-only values)
-    ego_dir     : directory containing EGO files (auto-discovers L0/L1)
-    db_path     : SQLite file; created if it doesn't exist
-    glider_id   : override the auto-detected glider id
-    verbose     : print progress
-
-    Returns a dict with row counts, warnings, and loaded parameters.
-    """
+def load_deployment(ego_l1_path=None, ego_l0_path=None, ego_dir=None,
+                    db_path="glider_rtqc.db", glider_id=None,
+                    verbose=True) -> dict:
     import netCDF4
 
-    t_start = _time.time()
-    warnings: list[str] = []
+    t0 = _time.time()
 
-    # Resolve file paths
     if ego_dir and not ego_l1_path:
         files = find_ego_files(ego_dir)
         ego_l1_path = files.get("ego_l1")
         ego_l0_path = ego_l0_path or files.get("ego_l0")
 
-    if not ego_l1_path and not ego_l0_path:
-        raise FileNotFoundError(
-            "No EGO NetCDF files found. Provide --ego-l1, --ego-l0, or --ego-dir.")
+    primary = ego_l1_path or ego_l0_path
+    if not primary:
+        raise FileNotFoundError("No EGO NetCDF provided.")
 
-    # The L1 file is primary (has QC flags + adjusted). Fall back to L0-only.
-    primary_path = ego_l1_path or ego_l0_path
-    is_l1 = ego_l1_path is not None
-
-    if verbose:
-        print("=" * 68)
-        print("  GLIDER EGO -> SQLITE")
-        print("=" * 68)
-        print(f"  EGO L1     : {ego_l1_path or '(none)'}")
-        print(f"  EGO L0     : {ego_l0_path or '(none)'}")
-        print(f"  database   : {os.path.abspath(db_path)}")
-
-    nc = netCDF4.Dataset(primary_path)
-
+    nc = netCDF4.Dataset(primary)
+    # REQUIRED, not an optimisation. The EGO 1.5 spec pins TIME.valid_max to
+    # 90000 while TIME is epoch seconds (~1.7e9), so netCDF4's default
+    # valid_min/valid_max auto-masking would mask EVERY timestamp and the load
+    # would silently produce zero rows. Fill values are handled explicitly in
+    # _float_or_none / _int_or_none instead.
+    nc.set_auto_mask(False)
     try:
-        # ── Discover parameters from the file itself ─────────────────────
-        params = discover_parameters(nc)
-        if not params:
-            raise ValueError(f"PARAMETER array is empty in {primary_path}")
+        # ── Discover parameters ──────────────────────────────────────────
+        params = _read_char_array(nc, "PARAMETER")
+        bgc_params = [p for p in params if p not in CORE_PARAMS]
 
-        # Classify
-        core_params = [p for p in params if classify_param(p) == "core"]
-        bgc_params = [p for p in params if classify_param(p) == "bgc"]
-
-        # ── Extract metadata from global attributes ──────────────────────
         def _attr(name, default=""):
             return str(nc.getncattr(name)) if name in nc.ncattrs() else default
 
         gid = glider_id or _attr("platform_code", "unknown")
         if gid == "unknown":
-            # Try to derive from filename
-            base = os.path.basename(primary_path)
+            base = os.path.basename(primary)
             m = re.match(r"incois_glider_(.+?)(?:_L[01])?_EGO\.nc$", base, re.I)
             if m:
                 gid = m.group(1)
 
-        if verbose:
-            print(f"  glider_id  : {gid}")
-            print(f"  parameters : {', '.join(params)}")
-            print(f"  core       : {', '.join(core_params)}")
-            print(f"  bgc        : {', '.join(bgc_params)}")
-
-
-        # ── Read TIME axis ───────────────────────────────────────────────
+        # ── Read arrays ──────────────────────────────────────────────────
         t_raw = np.asarray(nc.variables["TIME"][:], dtype=np.float64)
         n = len(t_raw)
-        # TIME fill value is 9999999999 (much larger than science fill of 99999)
-        time_fill = 9999999999.0
 
-        # Convert epoch seconds to ISO timestamps
+        # Timestamps
         ts_strings = []
         for t in t_raw:
-            if np.isfinite(t) and t < time_fill - 1:
+            if np.isfinite(t) and t < FILL_TIME - 1:
                 dt = datetime.fromtimestamp(float(t), tz=timezone.utc)
                 ts_strings.append(dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
             else:
                 ts_strings.append(None)
 
-        # Deterministic observation IDs
-        obs_ids = []
-        for ts in ts_strings:
-            if ts:
-                obs_ids.append(make_observation_id(gid, ts))
-            else:
-                obs_ids.append(None)
+        # Observation IDs
+        obs_ids = [make_observation_id(gid, ts) if ts else None for ts in ts_strings]
 
-        # Check for hash collisions
-        valid_ids = [oid for oid in obs_ids if oid is not None]
-        if len(set(valid_ids)) != len(valid_ids):
-            raise RuntimeError(
-                "observation_id hash collision — refusing to load")
+        # Position + phase
+        def _arr(name):
+            if name not in nc.variables:
+                return np.full(n, np.nan)
+            return np.asarray(nc.variables[name][:], dtype=np.float64)
 
-        # ── GPS fix set for has_gps_fix marking ──────────────────────────
-        gps_fix_times = _build_gps_fix_set(nc)
-        n_gps = len(gps_fix_times)
+        def _int_arr(name, fill):
+            if name not in nc.variables:
+                return np.full(n, fill, dtype=np.int32)
+            return np.asarray(nc.variables[name][:], dtype=np.int32)
 
-        # ── Compute distance over ground from GPS fixes ──────────────────
+        lat = _arr("LATITUDE")
+        lon = _arr("LONGITUDE")
+        phase = _int_arr("PHASE", -128)
+        phase_num = _int_arr("PHASE_NUMBER", 99999)
+        pos_qc = _int_arr("POSITION_QC", -1)
+
+        # GPS
+        gps_fix_set = _build_gps_fix_set(nc)
         distance_km = compute_distance_from_gps(nc)
+        t_round = np.round(t_raw).astype(np.int64)
 
-        # ── Read observation-level arrays ────────────────────────────────
-        pres = _var_array(nc, "PRES", n)
-        lat = _var_array(nc, "LATITUDE", n)
-        lon = _var_array(nc, "LONGITUDE", n)
-        phase = np.asarray(nc.variables["PHASE"][:], dtype=np.int16) if "PHASE" in nc.variables else np.full(n, -128, dtype=np.int16)
-        phase_num = np.asarray(nc.variables["PHASE_NUMBER"][:], dtype=np.int32) if "PHASE_NUMBER" in nc.variables else np.full(n, 99999, dtype=np.int32)
-        pos_qc = np.asarray(nc.variables["POSITION_QC"][:], dtype=np.int16) if "POSITION_QC" in nc.variables else np.full(n, 0, dtype=np.int16)
+        # Only keep parameters the file actually carries, and only names safe
+        # to use as SQL identifiers.
+        core_list = [p for p in CORE_PARAMS
+                     if p in nc.variables and _safe_param(p)]
+        bgc_list = [p for p in bgc_params
+                    if p in nc.variables and _safe_param(p)]
+        skipped = [p for p in (list(CORE_PARAMS) + bgc_params)
+                   if p in nc.variables and not _safe_param(p)]
+        if skipped:
+            print(f"  WARNING: skipping parameter(s) whose names are not valid "
+                  f"SQL identifiers: {', '.join(skipped)}")
 
-        # Count distinct profiles
+        # Read every column once, up front; the row loop just indexes them.
+        col_arrays = {}
+        for p in core_list + bgc_list:
+            col_arrays[p] = {
+                "val": _arr(p),
+                "qc": _int_arr(f"{p}_QC", -128),
+                "adj": _arr(f"{p}_ADJUSTED"),
+                "adj_qc": _int_arr(f"{p}_ADJUSTED_QC", -128),
+            }
+
+        # Counts
+        pres = col_arrays["PRES"]["val"] if "PRES" in col_arrays \
+            else np.full(n, np.nan)
+        pres_valid = pres[np.isfinite(pres) & (pres < FILL_FLOAT - 1)]
+        max_depth = float(pres_valid.max()) if pres_valid.size > 0 else None
         pn_valid = phase_num[phase_num != 99999]
         n_profiles = int(np.unique(pn_valid).size) if pn_valid.size > 0 else 0
-
-        # Max depth
-        pres_valid = pres[np.isfinite(pres)]
-        max_depth = float(pres_valid.max()) if pres_valid.size > 0 else None
+        n_gps = len(gps_fix_set)
 
         if verbose:
+            print("=" * 68)
+            print("  GLIDER EGO -> SQLITE (wide core + wide bgc)")
+            print("=" * 68)
+            print(f"  source     : {os.path.basename(primary)}")
+            print(f"  glider_id  : {gid}")
             print(f"  timestamps : {n:,}")
             print(f"  profiles   : {n_profiles}")
             print(f"  GPS fixes  : {n_gps}")
             print(f"  distance   : {distance_km:.1f} km" if distance_km else "  distance   : N/A")
             print(f"  max depth  : {max_depth:.1f} dbar" if max_depth else "  max depth  : N/A")
+            print(f"  core cols  : {', '.join(core_list)}"
+                  f"  ({len(core_list) * 4} columns)")
+            print(f"  bgc cols   : {', '.join(bgc_list)}"
+                  f"  ({len(bgc_list) * 4} columns)")
 
-
-        # ── Build meta row ───────────────────────────────────────────────
+        # ── Write to DB ──────────────────────────────────────────────────
         meta_row = {
             "glider_id": gid,
-            "deployment_name": _attr("deployment_code") or _attr("title"),
+            "deployment_name": _attr("deployment_code") or _attr("title") or _attr("id"),
             "deployment_start": _attr("time_coverage_start"),
             "deployment_end": _attr("time_coverage_end"),
             "max_depth_dbar": max_depth,
@@ -598,277 +454,120 @@ def load_deployment(ego_l1_path: str = None,
             "ego_l1_path": ego_l1_path,
         }
 
-        # ── Build observation rows (generator) ───────────────────────────
-        def _obs_rows():
-            t_round = np.round(t_raw).astype(np.int64)
-            for i in range(n):
-                oid = obs_ids[i]
-                ts = ts_strings[i]
-                if oid is None or ts is None:
-                    continue
-                p = float(pres[i]) if np.isfinite(pres[i]) else None
-                la = float(lat[i]) if np.isfinite(lat[i]) else None
-                lo = float(lon[i]) if np.isfinite(lon[i]) else None
-                ph = int(phase[i]) if phase[i] != -128 else None
-                pn = int(phase_num[i]) if phase_num[i] != 99999 else None
-                pq = int(pos_qc[i]) if pos_qc[i] >= 0 else None
-                gps = 1 if t_round[i] in gps_fix_times else 0
-                yield (oid, gid, ts, p, la, lo, ph, pn, pq, gps)
-
-        # ── Write to database ────────────────────────────────────────────
-        if verbose:
-            print()
-            print("  Writing to database...")
-
         conn = _connect(db_path)
         try:
-            apply_schema(conn)
+            _apply_schema(conn)
+            _create_wide_table(conn, "core", core_list)
+            _create_wide_table(conn, "bgc", bgc_list)
+            core_sql = _wide_upsert("core", core_list) if core_list else None
+            bgc_sql = _wide_upsert("bgc", bgc_list) if bgc_list else None
+
+            def _row_for(params, i, oid):
+                row = [oid]
+                for p in params:
+                    a = col_arrays[p]
+                    qc, aqc = a["qc"][i], a["adj_qc"][i]
+                    row.append(_float_or_none(a["val"][i]))
+                    row.append(int(qc) if qc != -128 else None)
+                    row.append(_float_or_none(a["adj"][i]))
+                    row.append(int(aqc) if aqc != -128 else None)
+                return tuple(row)
+
             with conn:
                 conn.execute(META_UPSERT, meta_row)
-                n_obs = _executemany_batched(conn, OBSERVATION_UPSERT, _obs_rows())
 
-                n_core = 0
-                for param in core_params:
-                    if param not in nc.variables:
+                # observation, core and bgc all written in one pass, batched, so
+                # nothing larger than BATCH_SIZE rows is resident at a time.
+                obs_batch, core_batch, bgc_batch = [], [], []
+                n_obs = 0
+
+                def _flush():
+                    nonlocal n_obs
+                    if not obs_batch:
+                        return
+                    conn.executemany(OBS_UPSERT, obs_batch)
+                    if core_sql:
+                        conn.executemany(core_sql, core_batch)
+                    if bgc_sql:
+                        conn.executemany(bgc_sql, bgc_batch)
+                    n_obs += len(obs_batch)
+                    obs_batch.clear()
+                    core_batch.clear()
+                    bgc_batch.clear()
+
+                for i in range(n):
+                    oid = obs_ids[i]
+                    if oid is None:
                         continue
-                    n_core += _executemany_batched(
-                        conn, _measurement_upsert("core"),
-                        _measurement_rows(nc, obs_ids, param, "core", n))
+                    ph, pn, pq = phase[i], phase_num[i], pos_qc[i]
+                    obs_batch.append((
+                        oid, gid, ts_strings[i],
+                        _float_or_none(lat[i]), _float_or_none(lon[i]),
+                        int(ph) if ph != -128 else None,
+                        int(pn) if pn != 99999 else None,
+                        int(pq) if pq >= 0 else None,
+                        1 if t_round[i] in gps_fix_set else 0,
+                    ))
+                    if core_sql:
+                        core_batch.append(_row_for(core_list, i, oid))
+                    if bgc_sql:
+                        bgc_batch.append(_row_for(bgc_list, i, oid))
+                    if len(obs_batch) >= BATCH_SIZE:
+                        _flush()
+                _flush()
 
-                n_bgc = 0
-                for param in bgc_params:
-                    if param not in nc.variables:
-                        continue
-                    n_bgc += _executemany_batched(
-                        conn, _measurement_upsert("bgc"),
-                        _measurement_rows(nc, obs_ids, param, "bgc", n))
-
-                # Wide views
-                create_wide_views(conn, core_params, bgc_params)
+                _create_views(conn, core_list, bgc_list)
 
             conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("ANALYZE")
             conn.execute("PRAGMA optimize")
         finally:
             conn.close()
 
+        n_core = n_obs if core_list else 0
+        n_bgc = n_obs if bgc_list else 0
+
     finally:
         nc.close()
 
-    elapsed = _time.time() - t_start
+    elapsed = _time.time() - t0
     result = {
         "glider_id": gid,
         "db_path": os.path.abspath(db_path),
         "rows": {"meta": 1, "observation": n_obs, "core": n_core, "bgc": n_bgc},
-        "parameters": {"core": core_params, "bgc": bgc_params},
-        "distance_km": distance_km,
-        "warnings": warnings,
+        "core_params": core_list,
+        "bgc_params": bgc_list,
         "elapsed_s": elapsed,
         "meta": meta_row,
     }
 
     if verbose:
-        _print_load_summary(result)
+        print(f"\n  Rows: observation={n_obs:,}  core={n_core:,}  bgc={n_bgc:,}")
+        print(f"  Done in {elapsed:.1f}s -> {os.path.abspath(db_path)}")
+        print("=" * 68)
+
     return result
 
 
-def _print_load_summary(result: dict) -> None:
-    print()
-    print("-" * 68)
-    print("  LOAD SUMMARY")
-    print("-" * 68)
-
-    m = result["meta"]
-    print(f"  deployment      : {m['deployment_name']}")
-    print(f"  window          : {m['deployment_start']}  ->  {m['deployment_end']}")
-    print(f"  profiles        : {m['n_profiles']}")
-    print(f"  GPS fixes       : {m['n_gps_fixes']}")
-    dist = m["distance_over_ground_km"]
-    print(f"  distance        : {f'{dist:.1f} km' if dist else 'N/A'}")
-    depth = m["max_depth_dbar"]
-    print(f"  max depth       : {f'{depth:.1f} dbar' if depth else 'N/A'}")
-    print(f"  EGO version     : {m['ego_format_version']}")
-    print(f"  data mode       : {m['data_mode']}")
-    print(f"  RTQC tests      : {m['rtqc_tests_applied']}")
-
-    print(f"\n  Rows inserted / updated")
-    for table, count in result["rows"].items():
-        print(f"    {table:<14} {count:>12,}")
-    total = sum(result["rows"].values())
-    print(f"    {'TOTAL':<14} {total:>12,}")
-
-    print(f"\n  Parameters loaded")
-    print(f"    core: {', '.join(result['parameters']['core'])}")
-    print(f"    bgc:  {', '.join(result['parameters']['bgc'])}")
-
-    if result["warnings"]:
-        print(f"\n  Warnings")
-        for w in result["warnings"]:
-            print(f"      - {w}")
-
-    print(f"\n  Completed in {result['elapsed_s']:.1f}s -> {result['db_path']}")
-    print("=" * 68)
-
-
-# ============================================================
-#  Sanity check
-# ============================================================
-
-def sanity_check(db_path: str, glider_id: str = None) -> None:
-    """Post-load verification: row counts, QC breakdown, join test."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        print("\n" + "=" * 68)
-        print("  SANITY CHECK")
-        print("=" * 68)
-
-        print("\n  Row counts")
-        for table in ("meta", "observation", "core", "bgc"):
-            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            print(f"    {table:<14} {n:>12,}")
-
-        print("\n  Deployments")
-        for row in conn.execute(
-            "SELECT glider_id, deployment_name, deployment_start, "
-            "       deployment_end, n_profiles, n_observations, "
-            "       distance_over_ground_km FROM meta ORDER BY glider_id"
-        ):
-            print(f"    {row['glider_id']:<12} {row['deployment_name']}")
-            print(f"      {row['deployment_start']} -> {row['deployment_end']}")
-            print(f"      profiles: {row['n_profiles']}   "
-                  f"observations: {row['n_observations']:,}   "
-                  f"distance: {row['distance_over_ground_km']:.1f} km"
-                  if row['distance_over_ground_km'] else
-                  f"      profiles: {row['n_profiles']}   "
-                  f"observations: {row['n_observations']:,}")
-
-
-        # ── QC breakdown ─────────────────────────────────────────────────
-        print("\n  QC breakdown by variable")
-        print(f"    {'family':<6} {'variable':<12} {'n':>10} {'good%':>7} "
-              f"{'bad':>9} {'missing':>9} {'no_qc':>9} {'adjusted':>10}")
-        print("    " + "-" * 80)
-        params = (glider_id,) if glider_id else ()
-        where = "WHERE glider_id = ?" if glider_id else ""
-        for row in conn.execute(
-            f"SELECT * FROM qc_summary {where} "
-            f"ORDER BY family DESC, variable_name", params
-        ):
-            pct = row["pct_good"]
-            print(f"    {row['family']:<6} {row['variable_name']:<12} "
-                  f"{row['n_total']:>10,} "
-                  f"{(f'{pct:.1f}' if pct is not None else '-'):>7} "
-                  f"{row['n_bad'] or 0:>9,} "
-                  f"{row['n_missing'] or 0:>9,} "
-                  f"{row['n_no_qc'] or 0:>9,} "
-                  f"{row['n_adjusted'] or 0:>10,}")
-
-        # ── Join test ────────────────────────────────────────────────────
-        print("\n  Join test: observation + core + bgc at one timestamp")
-        pick = conn.execute("""
-            SELECT o.observation_id
-              FROM observation o
-              JOIN core c ON c.observation_id = o.observation_id
-                         AND c.qc_flag IS NOT NULL AND c.value IS NOT NULL
-              JOIN bgc  b ON b.observation_id = o.observation_id
-                         AND b.qc_flag IS NOT NULL AND b.value IS NOT NULL
-             LIMIT 1
-        """).fetchone()
-
-        if pick is None:
-            pick = conn.execute("""
-                SELECT observation_id FROM observation
-                WHERE pressure IS NOT NULL LIMIT 1
-            """).fetchone()
-
-        if pick is None:
-            print("    (no suitable row found for join test)")
-        else:
-            obs_id = pick["observation_id"]
-            ctx = conn.execute("""
-                SELECT glider_id, timestamp, pressure, latitude, longitude,
-                       phase, phase_number, has_gps_fix
-                  FROM observation WHERE observation_id = ?
-            """, (obs_id,)).fetchone()
-            print(f"    observation_id : {obs_id}")
-            print(f"    timestamp      : {ctx['timestamp']}")
-            print(f"    pressure       : {ctx['pressure']}")
-            print(f"    lat/lon        : {ctx['latitude']}, {ctx['longitude']}")
-            print(f"    phase/number   : {ctx['phase']}/{ctx['phase_number']}")
-            print(f"    has_gps_fix    : {ctx['has_gps_fix']}")
-
-            print(f"\n    {'family':<6} {'variable':<12} {'value':>12} "
-                  f"{'qc':>4} {'adjusted':>12} {'adj_qc':>7}")
-            print("    " + "-" * 60)
-            for row in conn.execute("""
-                SELECT m.family, m.variable_name, m.value, m.qc_flag,
-                       m.value_adjusted, m.adjusted_qc_flag
-                  FROM measurement m
-                 WHERE m.observation_id = ?
-                 ORDER BY m.family DESC, m.variable_name
-            """, (obs_id,)):
-                v = f"{row['value']:.4f}" if row['value'] is not None else "NULL"
-                av = f"{row['value_adjusted']:.4f}" if row['value_adjusted'] is not None else "NULL"
-                q = row['qc_flag'] if row['qc_flag'] is not None else "-"
-                aq = row['adjusted_qc_flag'] if row['adjusted_qc_flag'] is not None else "-"
-                print(f"    {row['family']:<6} {row['variable_name']:<12} "
-                      f"{v:>12} {q:>4} {av:>12} {aq:>7}")
-
-        print("\n  Join OK.")
-        print("=" * 68)
-    finally:
-        conn.close()
-
-
-# ============================================================
-#  CLI
-# ============================================================
+# ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m db.load_deployment",
-        description="Load EGO 1.5 NetCDF files into SQLite.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""examples:
-  python -m db.load_deployment --ego-dir /path/to/output/EGO-timeseries
-  python -m db.load_deployment --ego-l1 /path/to/L1_EGO.nc
-  python -m db.load_deployment --ego-l1 L1_EGO.nc --ego-l0 L0_EGO.nc --db my.db
-
-Safe to re-run: observation_id is a deterministic hash, upserts in place.
-""")
-    parser.add_argument("--ego-dir", default=None,
-                        help="Directory containing EGO NetCDF files")
-    parser.add_argument("--ego-l1", default=None,
-                        help="Path to EGO L1 NetCDF (QC + adjusted)")
-    parser.add_argument("--ego-l0", default=None,
-                        help="Path to EGO L0 NetCDF (raw only)")
-    parser.add_argument("--db", default="glider_rtqc.db",
-                        help="SQLite database path (default: glider_rtqc.db)")
-    parser.add_argument("--glider-id", default=None,
-                        help="Override the auto-detected glider id")
-    parser.add_argument("--no-check", action="store_true",
-                        help="Skip the post-load sanity check")
-    parser.add_argument("-q", "--quiet", action="store_true",
-                        help="Suppress progress output")
+        description="Load EGO 1.5 NetCDF into SQLite (wide core + tall bgc).")
+    parser.add_argument("--ego-dir", default=None)
+    parser.add_argument("--ego-l1", default=None)
+    parser.add_argument("--ego-l0", default=None)
+    parser.add_argument("--db", default="glider_rtqc.db")
+    parser.add_argument("--glider-id", default=None)
+    parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args(argv)
-
-    # Also accept a positional argument as ego-dir for backwards compat
-    if args.ego_dir is None and args.ego_l1 is None and args.ego_l0 is None:
-        # Try first positional-style argument
-        remaining = [a for a in (argv or sys.argv[1:])
-                     if not a.startswith("-") and a != args.db]
-        if remaining:
-            candidate = remaining[0]
-            if os.path.isdir(candidate):
-                args.ego_dir = candidate
-            elif candidate.endswith(".nc"):
-                args.ego_l1 = candidate
 
     if not args.ego_dir and not args.ego_l1 and not args.ego_l0:
         parser.error("Provide --ego-dir, --ego-l1, or --ego-l0")
 
     try:
-        result = load_deployment(
+        load_deployment(
             ego_l1_path=args.ego_l1,
             ego_l0_path=args.ego_l0,
             ego_dir=args.ego_dir,
@@ -876,12 +575,9 @@ Safe to re-run: observation_id is a deterministic hash, upserts in place.
             glider_id=args.glider_id,
             verbose=not args.quiet,
         )
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
-
-    if not args.no_check:
-        sanity_check(args.db, result["glider_id"])
     return 0
 
 

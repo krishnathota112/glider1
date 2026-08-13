@@ -31,6 +31,7 @@ Usage (standalone):
                                  --deploy-yml /path/deployment.yml
 """
 import os
+import re
 import sys
 import argparse
 import time as _time
@@ -119,7 +120,10 @@ _VAR_MAP = {
     "cdom": dict(
         ego="CDOM", units="ppb", fill=99999.0,
         vmin=None, vmax=None,
-        standard_name=None,
+        # No CF standard name exists for CDOM. The EGO rules require the
+        # standard_name ATTRIBUTE to be present but prescribe no value, so it is
+        # written empty rather than filled with an invented CF name.
+        standard_name="",
         long_name="Concentration of coloured dissolved organic matter in sea water",
         sdn_param="SDN:P01::CDOMZZ01", sdn_uom="SDN:P06::UPPB",
         dtype="float", level="b",
@@ -128,7 +132,8 @@ _VAR_MAP = {
     "backscatter_700": dict(
         ego="BBP700", units="m-1", fill=99999.0,
         vmin=None, vmax=None,
-        standard_name=None,
+        # As for CDOM: attribute required, value not prescribed by the spec.
+        standard_name="",
         long_name="Particle backscattering at 700 nanometers",
         sdn_param="SDN:P01::BB117NIR", sdn_uom="SDN:P06::PMSR",
         dtype="float", level="b",
@@ -177,9 +182,109 @@ _QC_ATTRS = {
 # RTQC test codes applied by this pipeline (for history_qctest and meta table)
 _RTQC_TESTS_APPLIED = "TEST002 TEST003 TEST005 TEST006 TEST008 TEST009 TEST013 TEST014 TEST016 TEST019"
 
+# ── TIME valid_max: a known defect in the EGO 1.5 spec ───────────────────────
+# The official checker (EGO_V1.5_20250211.xml) requires TIME.valid_max and
+# TIME_GPS.valid_max to be exactly 90000. TIME is epoch SECONDS, so every real
+# timestamp (~1.7e9) sits far above that ceiling. The spec value is almost
+# certainly a leftover from a "seconds since midnight" draft, but the checker
+# enforces it, so a file with the physically-sensible ceiling FAILS validation.
+#
+# Consequence, measured (not assumed): netCDF4-python applies valid_min/valid_max
+# masking by DEFAULT, so with the spec value a naive reader sees TIME as entirely
+# missing (data=[--,--,--]). xarray does NOT apply that masking and is unaffected.
+# Every consumer in this repo therefore calls set_auto_mask(False) explicitly.
+#
+# Default is spec-compliant because passing the official checker is the whole
+# point of this format. Set EGO_TIME_VALID_MAX_MODE = "physical" (or pass
+# --time-valid-max physical) to emit 90000000000 instead: readable by naive
+# netCDF4 code, but it will fail the checker on these two attributes.
+_EGO_SPEC_TIME_VALID_MAX = 90000.0
+_PHYSICAL_TIME_VALID_MAX = 90000000000.0
+EGO_TIME_VALID_MAX_MODE = "spec"   # "spec" | "physical"
+
+
+def _time_valid_max() -> float:
+    return (_PHYSICAL_TIME_VALID_MAX
+            if EGO_TIME_VALID_MAX_MODE == "physical"
+            else _EGO_SPEC_TIME_VALID_MAX)
+
+
+# ── EGO controlled vocabularies (validated against ref_lists/*.txt) ──────────
+# Only values that actually appear in the reference tables are used here; a
+# free-text value would be rejected by the checker's conventions constraints.
+_REF = {
+    # table 22 — PLATFORM_FAMILY
+    "platform_family": ("COASTAL_GLIDER", "OPEN_OCEAN_GLIDER", "DEEP_GLIDER"),
+    # table 23 — PLATFORM_TYPE
+    "platform_type": ("SLOCUM_SG1", "SLOCUM_SG2", "SLOCUM_SG3", "SEAGLIDER",
+                      "SEAEXPLORER", "SEAEXPLORER_SHALLOW", "SPRAY"),
+    # table 24 — PLATFORM_MAKER
+    "platform_maker": ("WRC", "KONGSBERG", "ALSEAMAR", "BLUEFIN_ROBOTICS",
+                       "UNIVERSITY_OF_WASHINGTON"),
+    # table 9.1 — POSITIONING_SYSTEM
+    "positioning_system": ("ARGOS", "GPS", "IRIDIUM"),
+    # table 10.1 — TRANS_SYSTEM
+    "trans_system": ("IRIDIUM", "FREEWAVE"),
+    # table 20 — SENSOR_MOUNT (single permitted value)
+    "sensor_mount": ("MOUNTED_ON_GLIDER",),
+    # table 21 — SENSOR_ORIENTATION
+    "sensor_orientation": ("DOWNWARD", "UPWARD", "FORWARD", "BACKWARD"),
+    # table 4 — institution codes
+    "institution": ("IF", "BO", "NM", "DF", "OG", "SO", "IO", "TU", "IM"),
+    # table 12 — HISTORY_STEP
+    "history_step": ("ARFM", "ARGQ", "IGO3", "ARSQ", "ARCA", "ARUP", "ARDU",
+                     "RFMT", "COOA"),
+}
+
+# table 8 — WMO_INST_TYPE: the reference list contains exactly one value for
+# gliders, so it is a constant rather than a configurable field.
+_WMO_INST_TYPE_GLIDER = "830"
+
+# Defaults for this pipeline's platform. A Slocum G2 diving to ~1000 m is an
+# open-ocean glider (DEEP_GLIDER is reserved for the 6000 m class).
+_PLATFORM_DEFAULTS = {
+    "platform_family": "OPEN_OCEAN_GLIDER",
+    "platform_type":   "SLOCUM_SG2",
+    "platform_maker":  "WRC",
+}
+
+# HISTORY_INSTITUTION uses EGO reference table 4, which has no INCOIS entry.
+# 'IO' is the closest listed code; it is used so the field stays inside the
+# controlled vocabulary rather than emitting free text the checker rejects.
+# Override via deployment.yml metadata.institution_code once a code is assigned.
+_DEFAULT_INSTITUTION_CODE = "IO"
+
+# Per-parameter accuracy / resolution, from the manufacturer specifications for
+# the instruments in _SENSOR_TABLE. Written to PARAMETER_ACCURACY /
+# PARAMETER_RESOLUTION as free-text strings (the spec types them as char).
+_PARAM_SPECS = {
+    "TEMP":      {"units": "degree_Celsius", "accuracy": "0.002",  "resolution": "0.0001"},
+    "PSAL":      {"units": "psu",            "accuracy": "0.005",  "resolution": "0.0001"},
+    "PRES":      {"units": "decibar",        "accuracy": "0.1%FS", "resolution": "0.002%FS"},
+    "CNDC":      {"units": "mhos/m",         "accuracy": "0.0003", "resolution": "0.00001"},
+    "DOXY":      {"units": "micromole/kg",   "accuracy": "8 or 5%","resolution": "0.1"},
+    "CHLA":      {"units": "mg/m3",          "accuracy": "",       "resolution": "0.007"},
+    "CDOM":      {"units": "ppb",            "accuracy": "",       "resolution": "0.09"},
+    "BBP700":    {"units": "m-1",            "accuracy": "",       "resolution": "0.000002"},
+    "TURBIDITY": {"units": "ntu",            "accuracy": "",       "resolution": "0.01"},
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _date_time_str(dt64) -> str:
+    """Format a datetime64/str as the EGO DATE_TIME convention YYYYMMDDHHMISS."""
+    if dt64 is None:
+        return " " * 14
+    try:
+        s = str(dt64)
+        # '2024-01-29T14:03:28.000000000' -> '20240129140328'
+        digits = re.sub(r"\D", "", s)
+        return (digits[:14]).ljust(14)
+    except Exception:
+        return " " * 14
 
 
 def _pad_str(s: str, length: int) -> np.ndarray:
@@ -286,7 +391,7 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
             "units": "seconds since 1970-01-01T00:00:00Z",
             "_FillValue": np.float64(9999999999),
             "valid_min": np.float64(0),
-            "valid_max": np.float64(90000000000),
+            "valid_max": np.float64(_time_valid_max()),
             "axis": "T",
             "ancillary_variable": "TIME_QC",
             "sdn_parameter_urn": "SDN:P01::ELTMEP01",
@@ -360,7 +465,7 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
         "units": "seconds since 1970-01-01T00:00:00Z",
         "_FillValue": np.float64(9999999999),
         "valid_min": np.float64(0),
-        "valid_max": np.float64(90000000000),
+        "valid_max": np.float64(_time_valid_max()),
         "axis": "T",
         "ancillary_variable": "TIME_GPS_QC",
         "sdn_parameter_urn": "SDN:P01::ELTMEP01",
@@ -601,6 +706,425 @@ def _add_sensor_param_tables(deploy_meta, data_vars, param_list, src_ds=None):
         attrs={"long_name": "Data mode of the parameter",
                "conventions": "EGO reference table 19", "_FillValue": " "})
 
+    # SENSOR_MOUNT / SENSOR_ORIENTATION — table 20 has exactly one permitted
+    # value; orientation is per-instrument and overridable from deployment.yml.
+    data_vars["SENSOR_MOUNT"] = xr.DataArray(
+        _str_array(["MOUNTED_ON_GLIDER"] * len(sensors), 64),
+        dims=["N_SENSOR", "STRING64"],
+        attrs={"long_name": "Sensor mounting characteristics",
+               "conventions": "EGO reference table 20", "_FillValue": " "})
+    orientations = [
+        _pick(meta, f"{s['name'].lower()}_orientation",
+              _REF["sensor_orientation"], "DOWNWARD")
+        for s in sensors
+    ]
+    data_vars["SENSOR_ORIENTATION"] = xr.DataArray(
+        _str_array(orientations, 16),
+        dims=["N_SENSOR", "STRING16"],
+        attrs={"long_name": "Sensor orientation characteristics",
+               "conventions": "EGO reference table 21", "_FillValue": " "})
+
+    # PARAMETER_UNITS / ACCURACY / RESOLUTION from the instrument specifications.
+    units = [_PARAM_SPECS.get(p, {}).get("units", "") for p in param_list]
+    acc = [_PARAM_SPECS.get(p, {}).get("accuracy", "") for p in param_list]
+    res = [_PARAM_SPECS.get(p, {}).get("resolution", "") for p in param_list]
+    data_vars["PARAMETER_UNITS"] = xr.DataArray(
+        _str_array(units, 32), dims=["N_PARAM", "STRING32"],
+        attrs={"long_name": "Units of accuracy and resolution of the parameter",
+               "_FillValue": " "})
+    data_vars["PARAMETER_ACCURACY"] = xr.DataArray(
+        _str_array(acc, 32), dims=["N_PARAM", "STRING32"],
+        attrs={"long_name": "Accuracy of the parameter", "_FillValue": " "})
+    data_vars["PARAMETER_RESOLUTION"] = xr.DataArray(
+        _str_array(res, 32), dims=["N_PARAM", "STRING32"],
+        attrs={"long_name": "Resolution of the parameter", "_FillValue": " "})
+
+
+def _add_history_vars(deploy_meta, data_vars, param_list, n_time, is_l1):
+    """
+    Build the EGO HISTORY_* block: one record per (parameter, action).
+
+    Provenance model, following the reference toolbox's use of ACTION=QCP$/QCF$
+    (EGO reference table 7):
+      QCP$  — the set of RTQC tests PERFORMED on that parameter
+      QCF$  — the set of tests that FAILED (i.e. flagged at least one point)
+    HISTORY_QCTEST carries the test identifiers for that record, so the file
+    states which tests ran per parameter instead of only listing them once in a
+    global attribute.
+
+    For L0 (no QC applied) a single 'data decoded' record is written instead:
+    claiming QC provenance on an unQC'd file would be false.
+    """
+    meta = deploy_meta.get("metadata", {})
+    inst = str(meta.get("institution_code",
+                        _DEFAULT_INSTITUTION_CODE)).strip().upper()
+    if inst not in _REF["institution"]:
+        print(f"  NOTE: institution_code '{inst}' not in EGO reference table 4 "
+              f"— using '{_DEFAULT_INSTITUTION_CODE}'")
+        inst = _DEFAULT_INSTITUTION_CODE
+
+    now = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    software = "GL_RTQC"                 # STRING8
+    release = "1.0"                      # STRING4
+    # ARGQ = real-time QC step (EGO reference table 12); ARFM = format/decode.
+    step = "ARGQ" if is_l1 else "ARFM"
+
+    records = []
+    if is_l1:
+        for p in param_list:
+            records.append({
+                "action": "QCP$",        # tests performed
+                "parameter": p,
+                "qctest": _RTQC_TESTS_APPLIED,
+            })
+    else:
+        records.append({"action": "CV", "parameter": "", "qctest": ""})
+
+    n_hist = len(records)
+    data_vars["HISTORY_INSTITUTION"] = xr.DataArray(
+        _str_array([inst] * n_hist, 2), dims=["N_HISTORY", "STRING2"],
+        attrs={"long_name": "Institution which performed action",
+               "conventions": "EGO reference table 4", "_FillValue": " "})
+    data_vars["HISTORY_STEP"] = xr.DataArray(
+        _str_array([step] * n_hist, 4), dims=["N_HISTORY", "STRING4"],
+        attrs={"long_name": "Step in data processing",
+               "conventions": "EGO reference table 12", "_FillValue": " "})
+    data_vars["HISTORY_SOFTWARE"] = xr.DataArray(
+        _str_array([software] * n_hist, 8), dims=["N_HISTORY", "STRING8"],
+        attrs={"long_name": "Name of software which performed action",
+               "conventions": "Institution dependent", "_FillValue": " "})
+    data_vars["HISTORY_SOFTWARE_RELEASE"] = xr.DataArray(
+        _str_array([release] * n_hist, 4), dims=["N_HISTORY", "STRING4"],
+        attrs={"long_name": "Version/release of software which performed action",
+               "conventions": "Institution dependent", "_FillValue": " "})
+    data_vars["HISTORY_REFERENCE"] = xr.DataArray(
+        _str_array([meta.get("history_reference", "")] * n_hist, 64),
+        dims=["N_HISTORY", "STRING64"],
+        attrs={"long_name": "Reference of database",
+               "conventions": "Institution dependent", "_FillValue": " "})
+    data_vars["HISTORY_DATE"] = xr.DataArray(
+        _str_array([now] * n_hist, 14), dims=["N_HISTORY", "DATE_TIME"],
+        attrs={"long_name": "Date the history record was created",
+               "conventions": "YYYYMMDDHHMISS", "_FillValue": " "})
+    data_vars["HISTORY_ACTION"] = xr.DataArray(
+        _str_array([r["action"] for r in records], 64),
+        dims=["N_HISTORY", "STRING64"],
+        attrs={"long_name": "Action performed on data",
+               "conventions": "EGO reference table 7", "_FillValue": " "})
+    data_vars["HISTORY_PARAMETER"] = xr.DataArray(
+        _str_array([r["parameter"] for r in records], 16),
+        dims=["N_HISTORY", "STRING16"],
+        attrs={"long_name": "Parameter action is performed on",
+               "conventions": "EGO reference table 3", "_FillValue": " "})
+    data_vars["HISTORY_QCTEST"] = xr.DataArray(
+        _str_array([r["qctest"] for r in records], 16),
+        dims=["N_HISTORY", "STRING16"],
+        attrs={"long_name": "Documentation of tests performed, tests failed "
+                            "(in hex form)",
+               "conventions": "Write tests performed when ACTION=QCP$; "
+                              "tests failed when ACTION=QCF$",
+               "_FillValue": " "})
+
+    # PREVIOUS_VALUE applies to single-value corrections, which this chain does
+    # not make at the history level — declared fill rather than a fake number.
+    data_vars["HISTORY_PREVIOUS_VALUE"] = xr.DataArray(
+        np.full(n_hist, 99999.0, dtype=np.float32), dims=["N_HISTORY"],
+        attrs={"long_name": "Parameter or flag previous value before action",
+               "_FillValue": np.float32(99999)})
+    # Each record covers the whole timeseries.
+    data_vars["HISTORY_START_TIME_INDEX"] = xr.DataArray(
+        np.zeros(n_hist, dtype=np.int32), dims=["N_HISTORY"],
+        attrs={"long_name": "Start time index action applied on",
+               "_FillValue": np.int32(99999)})
+    data_vars["HISTORY_STOP_TIME_INDEX"] = xr.DataArray(
+        np.full(n_hist, max(n_time - 1, 0), dtype=np.int32), dims=["N_HISTORY"],
+        attrs={"long_name": "Stop time index action applied on",
+               "_FillValue": np.int32(99999)})
+
+
+def _scalar_char(value: str, length: int, long_name: str,
+                 conventions: str = None) -> xr.DataArray:
+    """A single fixed-length char variable (one STRINGnn dimension)."""
+    attrs = {"long_name": long_name, "_FillValue": " "}
+    if conventions:
+        attrs["conventions"] = conventions
+    dim = f"STRING{length}" if length != 14 else "DATE_TIME"
+    return xr.DataArray(_pad_str(str(value), length).astype("U1"),
+                        dims=[dim], attrs=attrs)
+
+
+def _platform_type_from_model(meta: dict) -> str | None:
+    """
+    Derive a table-23 PLATFORM_TYPE from the free-text glider_model/platform_type
+    already present in deployment.yml (e.g. 'Slocum G3 Deep' -> SLOCUM_SG3).
+
+    Reads the deployment's own fields rather than requiring a new EGO-specific
+    key to be added by hand.
+    """
+    text = " ".join(str(meta.get(k, "")) for k in
+                    ("glider_model", "platform_type", "glider_name")).upper()
+    if "SEAEXPLORER" in text:
+        return "SEAEXPLORER_SHALLOW" if "SHALLOW" in text else "SEAEXPLORER"
+    if "SEAGLIDER" in text:
+        return "SEAGLIDER"
+    if "SPRAY" in text:
+        return "SPRAY"
+    if "SLOCUM" in text:
+        for tag, val in (("G3", "SLOCUM_SG3"), ("G2", "SLOCUM_SG2"),
+                         ("G1", "SLOCUM_SG1")):
+            if tag in text:
+                return val
+    return None
+
+
+def _warn_if_template_metadata(meta: dict) -> None:
+    """
+    Warn when deployment.yml still carries values from the upstream C-PROOF
+    template. Those fields flow straight into the EGO global attributes, so an
+    unedited template silently publishes the wrong institution, project, sea
+    name and PI on an INCOIS product.
+    """
+    markers = []
+    blob = " ".join(str(v) for v in meta.values()).lower()
+    for needle, label in (
+        ("saanich", "sea_name/summary/project still reference Saanich Inlet"),
+        ("cproof", "creator/publisher URLs still point at cproof.uvic.ca"),
+        ("uvic.ca", "contact e-mails are still @uvic.ca"),
+        ("c-proof", "institution is still 'C-PROOF'"),
+    ):
+        if needle in blob:
+            markers.append(label)
+    if str(meta.get("glider_wmo", "")).strip() in ("999999", ""):
+        markers.append("glider_wmo is the placeholder '999999'")
+
+    if markers:
+        print("  WARNING: deployment.yml looks like an unedited C-PROOF "
+              "template — these values are published in the EGO file:")
+        for m in markers:
+            print(f"    - {m}")
+
+
+def _pick(meta: dict, key: str, allowed: tuple, default: str) -> str:
+    """
+    Take a value from deployment.yml only if it is in the controlled vocabulary.
+
+    A typo or a free-text platform name silently becomes the validated default
+    rather than being written out and failing the checker downstream.
+    """
+    val = str(meta.get(key, "")).strip().upper()
+    if val and val in allowed:
+        return val
+    if val:
+        print(f"  NOTE: deployment.yml {key}='{val}' is not in the EGO "
+              f"reference table — using '{default}' instead")
+    return default
+
+
+def _add_platform_vars(deploy_meta, data_vars, src_ds, platform_code):
+    """
+    Add the EGO glider-characteristics block (spec section 'glider_characteristics').
+
+    All values come from deployment.yml where available, constrained to the
+    reference tables; unknown fields are written as blanks rather than omitted,
+    so the variable exists with its declared _FillValue.
+    """
+    meta = deploy_meta.get("metadata", {})
+    _warn_if_template_metadata(meta)
+
+    fam = _pick(meta, "platform_family", _REF["platform_family"],
+                _PLATFORM_DEFAULTS["platform_family"])
+    # Prefer a type derived from the deployment's own glider_model text over the
+    # hard default, so 'Slocum G3 Deep' yields SLOCUM_SG3 rather than SLOCUM_SG2.
+    derived = _platform_type_from_model(meta)
+    if derived:
+        typ = derived
+        print(f"  PLATFORM_TYPE: {typ} (from glider_model/platform_type)")
+    else:
+        typ = _pick(meta, "platform_type", _REF["platform_type"],
+                    _PLATFORM_DEFAULTS["platform_type"])
+    mkr = _pick(meta, "platform_maker", _REF["platform_maker"],
+                _PLATFORM_DEFAULTS["platform_maker"])
+
+    data_vars["PLATFORM_FAMILY"] = _scalar_char(
+        fam, 256, "Category of instrument", "EGO reference table 22")
+    data_vars["PLATFORM_TYPE"] = _scalar_char(
+        typ, 32, "Type of glider", "EGO reference table 23")
+    data_vars["PLATFORM_MAKER"] = _scalar_char(
+        mkr, 256, "Name of the manufacturer", "EGO reference table 24")
+    data_vars["GLIDER_SERIAL_NO"] = _scalar_char(
+        meta.get("glider_serial", platform_code), 16,
+        "Serial number of the glider")
+    data_vars["GLIDER_OWNER"] = _scalar_char(
+        meta.get("glider_owner", meta.get("institution", "")), 64,
+        "Glider owner")
+    data_vars["OPERATING_INSTITUTION"] = _scalar_char(
+        meta.get("operating_institution", meta.get("institution", "")), 64,
+        "Operating institution of the glider")
+    data_vars["WMO_INST_TYPE"] = _scalar_char(
+        _WMO_INST_TYPE_GLIDER, 4, "Coded instrument type",
+        "EGO reference table 8")
+
+    # POSITIONING_SYSTEM / TRANS_SYSTEM are 2-D (N_* x STRINGnn) even with one
+    # entry, so they are built with _str_array to keep the declared shape.
+    pos_sys = [_pick(meta, "positioning_system",
+                     _REF["positioning_system"], "GPS")]
+    data_vars["POSITIONING_SYSTEM"] = xr.DataArray(
+        _str_array(pos_sys, 8), dims=["N_POSITIONING_SYSTEM", "STRING8"],
+        attrs={"long_name": "Positioning system",
+               "conventions": "EGO reference table 9.1", "_FillValue": " "})
+
+    # deployment.yml carries this as free-text 'transmission_system' (and the
+    # 1131 file spells it 'IRRIDIUM'), so normalise before vocabulary matching.
+    _trans_raw = str(meta.get("trans_system",
+                              meta.get("transmission_system", ""))).upper()
+    if "IRID" in _trans_raw or "IRRID" in _trans_raw:
+        trans = ["IRIDIUM"]
+    elif "FREEWAVE" in _trans_raw:
+        trans = ["FREEWAVE"]
+    else:
+        trans = [_pick(meta, "trans_system", _REF["trans_system"], "IRIDIUM")]
+    data_vars["TRANS_SYSTEM"] = xr.DataArray(
+        _str_array(trans, 16), dims=["N_TRANS_SYSTEM", "STRING16"],
+        attrs={"long_name": "Telecommunication system used",
+               "conventions": "EGO reference table 10.1", "_FillValue": " "})
+    data_vars["TRANS_SYSTEM_ID"] = xr.DataArray(
+        _str_array([meta.get("trans_system_id", "")], 32),
+        dims=["N_TRANS_SYSTEM", "STRING32"],
+        attrs={"long_name": "Program identifier used by the transmission system",
+               "_FillValue": " "})
+    data_vars["TRANS_FREQUENCY"] = xr.DataArray(
+        _str_array([meta.get("trans_frequency", "")], 16),
+        dims=["N_TRANS_SYSTEM", "STRING16"],
+        attrs={"long_name": "Frequency of transmission from the glider",
+               "units": "hertz", "_FillValue": " "})
+
+    for var, length, ln in (
+        ("BATTERY_TYPE", 64, "Type of battery packs in the glider"),
+        ("BATTERY_PACKS", 64, "Configuration of battery packs in the glider"),
+        ("SPECIAL_FEATURES", 1024,
+         "Extra features of the glider (algorithms, compressee, pump change etc.)"),
+        ("FIRMWARE_VERSION_NAVIGATION", 16,
+         "Firmware version of the navigation controller board"),
+        ("FIRMWARE_VERSION_SCIENCE", 16,
+         "Firmware version of the scientific sensors controller board"),
+        ("GLIDER_MANUAL_VERSION", 16, "Manual version of the glider"),
+        ("ANOMALY", 256,
+         "Describe any anomalies or problems the glider may have had"),
+        ("CUSTOMIZATION", 1024,
+         "Glider customization, i.e. (institution and modifications)"),
+        ("DAC_FORMAT_ID", 16,
+         "Format number used by the DAC to describe the data format type for each glider"),
+    ):
+        data_vars[var] = _scalar_char(meta.get(var.lower(), ""), length, ln)
+
+
+def _add_deployment_vars(deploy_meta, data_vars, src_ds):
+    """
+    Add the EGO glider-deployment block.
+
+    Start/end position and time are taken from the actual data when
+    deployment.yml does not state them, so the block reflects the file.
+    """
+    meta = deploy_meta.get("metadata", {})
+
+    t = src_ds["time"].values
+    lat = src_ds["latitude"].values if "latitude" in src_ds else np.array([np.nan])
+    lon = src_ds["longitude"].values if "longitude" in src_ds else np.array([np.nan])
+
+    finite = np.isfinite(lat) & np.isfinite(lon)
+    first = int(np.argmax(finite)) if finite.any() else 0
+    last = int(len(finite) - 1 - np.argmax(finite[::-1])) if finite.any() else 0
+
+    def _f(v):
+        return np.float64(v) if np.isfinite(v) else np.float64(99999)
+
+    data_vars["DEPLOYMENT_START_DATE"] = _scalar_char(
+        _date_time_str(t[0] if len(t) else None), 14,
+        "Date (UTC) of the deployment", "YYYYMMDDHHMISS")
+    data_vars["DEPLOYMENT_START_LATITUDE"] = xr.DataArray(
+        _f(lat[first]), attrs={
+            "long_name": "Latitude of the glider when deployed",
+            "units": "degree_north", "_FillValue": np.float64(99999),
+            "valid_min": np.float64(-90), "valid_max": np.float64(90)})
+    data_vars["DEPLOYMENT_START_LONGITUDE"] = xr.DataArray(
+        _f(lon[first]), attrs={
+            "long_name": "Longitude of the glider when deployed",
+            "units": "degree_east", "_FillValue": np.float64(99999),
+            "valid_min": np.float64(-180), "valid_max": np.float64(180)})
+    data_vars["DEPLOYMENT_START_QC"] = xr.DataArray(
+        np.int8(0), attrs={
+            "long_name": "Quality on DEPLOYMENT_START date, time and location",
+            "conventions": "EGO reference table 2.1",
+            "_FillValue": np.int8(-128),
+            "flag_values": np.array([0, 1, 2, 3, 4, 5, 8, 9], dtype=np.int8),
+            "flag_meanings": _QC_ATTRS["flag_meanings"]})
+
+    data_vars["DEPLOYMENT_END_DATE"] = _scalar_char(
+        _date_time_str(t[-1] if len(t) else None), 14,
+        "Date (UTC) of the glider recovery", "YYYYMMDDHHMISS")
+    data_vars["DEPLOYMENT_END_LATITUDE"] = xr.DataArray(
+        _f(lat[last]), attrs={
+            "long_name": "Latitude of the glider recovery",
+            "units": "degree_north", "_FillValue": np.float64(99999),
+            "valid_min": np.float64(-90), "valid_max": np.float64(90)})
+    data_vars["DEPLOYMENT_END_LONGITUDE"] = xr.DataArray(
+        _f(lon[last]), attrs={
+            "long_name": "Longitude of the glider recovery",
+            "units": "degree_east", "_FillValue": np.float64(99999),
+            "valid_min": np.float64(-180), "valid_max": np.float64(180)})
+    data_vars["DEPLOYMENT_END_QC"] = xr.DataArray(
+        np.int8(0), attrs={
+            "long_name": "Quality on DEPLOYMENT_END date, time and location",
+            "conventions": "EGO reference table 2.1",
+            "_FillValue": np.int8(-128),
+            "flag_values": np.array([0, 1, 2, 3, 4, 5, 8, 9], dtype=np.int8),
+            "flag_meanings": _QC_ATTRS["flag_meanings"]})
+
+    status = str(meta.get("deployment_end_status", "")).strip().upper()[:1]
+    data_vars["DEPLOYMENT_END_STATUS"] = xr.DataArray(
+        np.array(status if status in ("R", "L") else " ", dtype="U1"),
+        attrs={"long_name": "Status of the end of mission of the glider",
+               "conventions": "R: retrieved, L: lost", "_FillValue": " "})
+
+    for var, length, ln in (
+        ("DEPLOYMENT_PLATFORM", 32, "Identifier of the deployment platform"),
+        ("DEPLOYMENT_CRUISE_ID", 32,
+         "Identifier of the cruise that deployed the glider"),
+        ("DEPLOYMENT_REFERENCE_STATION_ID", 256,
+         "Identifier of stations used to verify the parameter measurements"),
+        ("DEPLOYMENT_OPERATOR", 256,
+         "Name of the person in charge of the glider deployment"),
+    ):
+        data_vars[var] = _scalar_char(meta.get(var.lower(), ""), length, ln)
+
+
+def _add_positioning_method(src_ds, data_vars, n, gps_time_sec, t_sec):
+    """
+    POSITIONING_METHOD (EGO reference table 10.2): 0=GPS, 1=Argos, 2=interpolated.
+
+    A sample is flagged GPS only where its timestamp coincides with a real
+    surface fix; everything else in the timeseries is a dead-reckoned /
+    interpolated position, which is what code 2 means. Reporting 0 everywhere
+    would overstate the positional provenance of subsurface samples.
+    """
+    method = np.full(n, np.int8(2), dtype=np.int8)   # interpolated
+    if gps_time_sec is not None and len(gps_time_sec):
+        fix = np.isin(np.round(t_sec).astype(np.int64),
+                      np.round(gps_time_sec).astype(np.int64))
+        method[fix] = np.int8(0)                     # GPS
+        n_fix = int(fix.sum())
+    else:
+        n_fix = 0
+    print(f"  POSITIONING_METHOD: {n_fix} GPS-fix sample(s), "
+          f"{n - n_fix} interpolated")
+    data_vars["POSITIONING_METHOD"] = xr.DataArray(
+        method, dims=["TIME"], attrs={
+            "long_name": "Positioning method",
+            "conventions": "EGO reference table 10.2",
+            "_FillValue": np.int8(-128),
+            "flag_values": np.array([0, 1, 2], dtype=np.int8),
+            "flag_meanings": "GPS Argos interpolated"})
+
 
 def _add_science_vars(src_ds, data_vars, is_l1, n):
     """
@@ -674,7 +1198,10 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
             "coordinates": "TIME LATITUDE LONGITUDE PRES",
             "glider_original_parameter_name": internal,
         }
-        if info.get("standard_name"):
+        # `is not None` rather than truthiness: an empty standard_name is a
+        # deliberate, spec-required value for parameters with no CF name
+        # (CDOM, BBP700), and must still be written.
+        if info.get("standard_name") is not None:
             var_attrs["standard_name"] = info["standard_name"]
         if info.get("long_name"):
             var_attrs["long_name"] = info["long_name"]
@@ -841,6 +1368,15 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     # Sensor + parameter metadata tables
     _add_sensor_param_tables(deploy_meta, data_vars, written_params, src_ds=src_ds)
 
+    # Platform characteristics, deployment block, positioning provenance, history
+    _add_platform_vars(deploy_meta, data_vars, src_ds, platform_code)
+    _add_deployment_vars(deploy_meta, data_vars, src_ds)
+    _add_positioning_method(
+        src_ds, data_vars, n,
+        data_vars["TIME_GPS"].values if "TIME_GPS" in data_vars else None,
+        data_vars["TIME"].values)
+    _add_history_vars(deploy_meta, data_vars, written_params, n, is_l1)
+
     # ── Assemble Dataset ─────────────────────────────────────────────────────
     # Determine dimension sizes from data_vars
     dims = {
@@ -865,8 +1401,17 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     lat_vals = src_ds["latitude"].values if "latitude" in src_ds else np.array([np.nan])
     lon_vals = src_ds["longitude"].values if "longitude" in src_ds else np.array([np.nan])
 
+    # Vertical extent for geospatial_vertical_* (EGO expects the pressure range).
+    if "pressure" in src_ds:
+        _p = src_ds["pressure"].values
+        _p = _p[np.isfinite(_p)]
+        vert_min = f"{float(_p.min()):.2f}" if _p.size else ""
+        vert_max = f"{float(_p.max()):.2f}" if _p.size else ""
+    else:
+        vert_min = vert_max = ""
+
     ds_out.attrs = {
-        # Mandatory
+        # ── Mandatory (checker-enforced) ─────────────────────────────────────
         "data_type":       "EGO glider time-series data",
         "format_version":  "1.5",
         "platform_code":   platform_code,
@@ -874,26 +1419,87 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
         "data_mode":       data_mode,
         "naming_authority": "EGO",
         "id":              f"{platform_code}_{t_start[:10].replace('-','')}",
-        # Optional but strongly recommended
+        # ── Spec-defined descriptive attributes (EGO_format_1.5.json) ────────
         "Conventions":     "CF-1.4 EGO-1.5",
+        "netcdf_version":  "4",
+        "cdm_data_type":   "Trajectory",
         "title":           f"Glider {platform_code} EGO timeseries",
         "institution":     institution,
         "source":          "Glider observation",
         "history":         f"{_now_iso()} — Converted to EGO 1.5 by step_ego.py",
         "comment":         meta.get("comment", ""),
-        "project_name":    meta.get("project_name", ""),
         "deployment_code": deployment_name,
-        "principal_investigator": meta.get("principal_investigator", ""),
+        "license":         "https://creativecommons.org/licenses/by-nc/4.0/",
+        "quality_index":   meta.get("quality_index", "unknown quality"),
         "geospatial_lat_min": f"{float(np.nanmin(lat_vals)):.4f}",
         "geospatial_lat_max": f"{float(np.nanmax(lat_vals)):.4f}",
         "geospatial_lon_min": f"{float(np.nanmin(lon_vals)):.4f}",
         "geospatial_lon_max": f"{float(np.nanmax(lon_vals)):.4f}",
+        "geospatial_vertical_min": vert_min,
+        "geospatial_vertical_max": vert_max,
         "time_coverage_start": t_start,
         "time_coverage_end":   t_end,
-        "qc_manual":  "EGO QC Manual v1.0",
+        # The spec pins qc_manual to the published EGO QC manual DOI; a local
+        # free-text label here is not the document the format refers to.
+        "qc_manual":  "http://doi.org/10.13155/51485",
+        "distribution_statement": (
+            "EGO data are published without any warranty, express or implied. "
+            "The user assumes all risk arising from his/her use of EGO data. "
+            "EGO data are intended to be research-quality and include estimates "
+            "of data quality and accuracy, but it is possible that these "
+            "estimates or the data themselves contain errors. It is the sole "
+            "responsibility of the user to assess if the data are appropriate "
+            "for his/her use, and to interpret the data, data quality, and data "
+            "accuracy accordingly. EGO welcomes users to ask questions and "
+            "report problems to the contact addresses listed in the data files "
+            "or on the EGO internet page."),
         "data_processing_chain_name":    "INCOIS Glider RTQC Pipeline",
         "data_processing_chain_version": "1.0",
+        "data_processing_chain_uri":     "https://doi.org/10.17882/45402",
         "rtqc_tests_applied": _RTQC_TESTS_APPLIED,
+        # ── Recommended discovery attributes (EGO user manual) ───────────────
+        # Written even when unknown so the attribute exists with an empty value,
+        # which is how the format spec itself declares them. Populated from
+        # deployment.yml where the deployment provides a real value — inventing
+        # a DOI, EDMO code or PI email would be worse than leaving it blank.
+        "wmo_platform_code":  str(meta.get("wmo_platform_code",
+                                           meta.get("glider_wmo",
+                                                    meta.get("wmo_id", "")))),
+        "project_name":       str(meta.get("project_name",
+                                           meta.get("project", ""))),
+        "principal_investigator": str(meta.get("principal_investigator",
+                                               meta.get("creator_name", ""))),
+        "principal_investigator_email": str(
+            meta.get("principal_investigator_email",
+                     meta.get("creator_email", ""))),
+        "area":               str(meta.get("area", meta.get("sea_name", ""))),
+        "institution_references": str(meta.get("institution_references",
+                                               meta.get("metadata_link", ""))),
+        "references":         str(meta.get("references",
+                                           "http://www.ego-network.org")),
+        "summary":            str(meta.get("summary", "")) or (
+            f"Glider {platform_code} EGO 1.5 time-series: "
+            f"{', '.join(written_params)} with real-time QC flags, "
+            f"{t_start[:10]} to {t_end[:10]}."),
+        "abstract":           str(meta.get("abstract", "")),
+        "keywords":           str(meta.get(
+            "keywords",
+            "glider, CTD, temperature, salinity, conductivity, pressure, "
+            "dissolved oxygen, chlorophyll, backscatter, CDOM, ocean")),
+
+        "sdn_edmo_code":      str(meta.get("sdn_edmo_code", "")),
+        "authors":            str(meta.get("authors", "")),
+        "data_assembly_center": str(meta.get("institution_code",
+                                             _DEFAULT_INSTITUTION_CODE)),
+        "observatory":        str(meta.get("observatory", institution)),
+        "deployment_label":   deployment_name,
+        "doi":                str(meta.get("doi", "")),
+        "citation":           str(meta.get("citation", "")) or (
+            f"{institution}. Glider {platform_code} EGO time-series "
+            f"({t_start[:10]} to {t_end[:10]})."),
+        # 'void' is the EGO/Argo convention for a file that is not on a fixed
+        # update schedule; override in deployment.yml for operational feeds.
+        "update_interval":    str(meta.get("update_interval", "void")),
     }
 
     # ── Write output ─────────────────────────────────────────────────────────
@@ -902,11 +1508,18 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     # in each variable's attrs. Setting it in both places causes xarray to
     # raise a conflict error when writing NetCDF4.
     encoding = {}
+    # Variables the spec types as `double` must stay float64. Everything else
+    # that is float64 is narrowed to float32 to keep the file compact.
+    _KEEP_DOUBLE = (
+        "TIME", "TIME_GPS", "LATITUDE", "LONGITUDE",
+        "LATITUDE_GPS", "LONGITUDE_GPS",
+        "DEPLOYMENT_START_LATITUDE", "DEPLOYMENT_START_LONGITUDE",
+        "DEPLOYMENT_END_LATITUDE", "DEPLOYMENT_END_LONGITUDE",
+    )
     for var in ds_out.data_vars:
         da = ds_out[var]
         if np.issubdtype(da.dtype, np.floating) and da.dtype == np.float64:
-            if var not in ("TIME", "TIME_GPS", "LATITUDE", "LONGITUDE",
-                           "LATITUDE_GPS", "LONGITUDE_GPS"):
+            if var not in _KEEP_DOUBLE:
                 encoding[var] = {"dtype": "float32"}
         # char arrays — no special encoding needed
 
@@ -954,7 +1567,16 @@ if __name__ == "__main__":
     parser.add_argument("--out-l1",    default=None, help="Output path for EGO L1")
     parser.add_argument("--deploy-yml",default=None, help="Path to deployment.yml")
     parser.add_argument("--data-mode", default="R",  help="R=real-time, D=delayed")
+    parser.add_argument("--time-valid-max", default="spec",
+                        choices=["spec", "physical"],
+                        help="TIME/TIME_GPS valid_max: 'spec' = 90000 (passes "
+                             "the official EGO checker; naive netCDF4 readers "
+                             "mask TIME unless they disable auto-masking), "
+                             "'physical' = 90000000000 (readable everywhere, "
+                             "fails the checker on those two attributes)")
     args = parser.parse_args()
+
+    EGO_TIME_VALID_MAX_MODE = args.time_valid_max
 
     if args.l0:
         out = args.out_l0 or args.l0.replace(".nc", "_EGO.nc")

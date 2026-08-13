@@ -7,6 +7,16 @@ from flask import Flask, jsonify, render_template, send_from_directory, abort, r
 
 app = Flask(__name__, template_folder='templates')
 
+# EGO NetCDF + SQLite endpoints live in their own read-only blueprint.
+# Import works both as `python web_dashboard/app.py` and `python -m
+# web_dashboard.app`, so the launch style cannot break the dashboard.
+try:
+    from ego_api import ego_api, db_path
+except ImportError:  # pragma: no cover - depends on launch style
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ego_api import ego_api, db_path
+app.register_blueprint(ego_api)
+
 # ------------------------------------------------------------------
 # Configuration.
 #
@@ -21,9 +31,27 @@ app = Flask(__name__, template_folder='templates')
 # ------------------------------------------------------------------
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def _default_raw_data_dir() -> str:
+    """
+    Best guess at the deployments folder when GLIDER_RAW_DATA_DIR is unset.
+
+    Checks the locations this project actually uses, in order, and only falls
+    back to the historical 'Raw_Data' sibling if none exist — so the dashboard
+    comes up pointing at real data instead of an empty list.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(_REPO_ROOT), "glider_data"),
+        os.path.join(os.path.dirname(_REPO_ROOT), "glider"),
+        os.path.join(os.path.dirname(_REPO_ROOT), "Raw_Data"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[-1]
+
+
 RAW_DATA_DIR = os.path.abspath(os.environ.get(
-    "GLIDER_RAW_DATA_DIR",
-    os.path.join(os.path.dirname(_REPO_ROOT), "Raw_Data")))
+    "GLIDER_RAW_DATA_DIR", _default_raw_data_dir()))
 
 PIPELINE_SCRIPT = os.path.abspath(os.environ.get(
     "GLIDER_PIPELINE",
@@ -115,6 +143,28 @@ def parse_summary_report(file_path):
 def index():
     return render_template('index.html')
 
+def deployment_root(name):
+    """
+    Resolve a deployment folder name to the directory that actually holds
+    `output/`.
+
+    Real deployment folders in this project are sometimes nested one level
+    (glider_data/1131-Data(Dec-2024)/1131-Data(Dec-2024)/output), typically from
+    unzipping an archive that contained its own top-level folder. Looking only
+    at the top level marked those deployments 'unprocessed' even though the
+    products existed, so one level of nesting is resolved here.
+    """
+    base = os.path.join(RAW_DATA_DIR, os.path.basename(name))
+    if os.path.isdir(os.path.join(base, 'output')):
+        return base
+    if os.path.isdir(base):
+        for child in sorted(os.listdir(base)):
+            nested = os.path.join(base, child)
+            if os.path.isdir(os.path.join(nested, 'output')):
+                return nested
+    return base
+
+
 @app.route('/api/transects')
 def get_transects():
     transects = []
@@ -122,9 +172,9 @@ def get_transects():
         return jsonify([])
         
     for name in os.listdir(RAW_DATA_DIR):
-        folder_path = os.path.join(RAW_DATA_DIR, name)
-        if not os.path.isdir(folder_path):
+        if not os.path.isdir(os.path.join(RAW_DATA_DIR, name)):
             continue
+        folder_path = deployment_root(name)
             
         plots_dir = os.path.join(folder_path, 'output', 'plots')
         reports_dir = os.path.join(folder_path, 'output', 'reports')
@@ -154,20 +204,28 @@ def get_transects():
         if name in active_processes:
             status = active_processes[name]["status"]
             
+        # EGO products, so the UI can link the deployment to its EGO files and
+        # to its row in the database.
+        ego_dir = os.path.join(folder_path, 'output', 'EGO-timeseries')
+        ego_files = (sorted(f for f in os.listdir(ego_dir) if f.endswith('.nc'))
+                     if os.path.isdir(ego_dir) else [])
+
         transects.append({
             'folder_name': name,
             'status': status,
             'metadata': summary_data,
-            'plots': sorted(plot_files)
+            'plots': sorted(plot_files),
+            'ego_files': ego_files,
+            'has_ego': bool(ego_files),
+            'glider_id': summary_data.get('glider_id', name),
         })
         
     return jsonify(sorted(transects, key=lambda x: x['folder_name']))
 
 @app.route('/plots/<transect>/<filename>')
 def serve_plot(transect, filename):
-    safe_transect = os.path.basename(transect)
     safe_filename = os.path.basename(filename)
-    plots_dir = os.path.join(RAW_DATA_DIR, safe_transect, 'output', 'plots')
+    plots_dir = os.path.join(deployment_root(transect), 'output', 'plots')
     if not os.path.exists(os.path.join(plots_dir, safe_filename)):
         abort(404)
     return send_from_directory(plots_dir, safe_filename)
@@ -175,7 +233,7 @@ def serve_plot(transect, filename):
 @app.route('/api/process/<glider_id>', methods=['POST'])
 def process_transect(glider_id):
     safe_glider_id = os.path.basename(glider_id)
-    folder_path = os.path.join(RAW_DATA_DIR, safe_glider_id)
+    folder_path = deployment_root(safe_glider_id)
     if not os.path.exists(folder_path):
         return jsonify({"error": "Transect directory not found"}), 404
         
@@ -231,7 +289,8 @@ def process_status(glider_id):
     
     if safe_glider_id not in active_processes:
         # Check if already processed (plots exist)
-        plots_dir = os.path.join(RAW_DATA_DIR, safe_glider_id, 'output', 'plots')
+        plots_dir = os.path.join(deployment_root(safe_glider_id),
+                                 'output', 'plots')
         if os.path.exists(plots_dir) and any(f.endswith('.png') for f in os.listdir(plots_dir)):
             return jsonify({"status": "processed", "progress": 100, "log": "Already processed."})
         return jsonify({"status": "unprocessed", "progress": 0, "log": "Idle."})
@@ -301,8 +360,18 @@ if __name__ == '__main__':
     print(f"  raw data : {RAW_DATA_DIR}")
     print(f"  pipeline : {PIPELINE_SCRIPT}")
     print(f"  python   : {PYTHON}")
+    print(f"  database : {db_path()}")
     if not os.path.isdir(RAW_DATA_DIR):
         print(f"  WARNING: raw data dir does not exist — "
               f"set GLIDER_RAW_DATA_DIR")
+    if not os.path.exists(db_path()):
+        print(f"  WARNING: database not found — build it with "
+              f"`python tools/load_db.py <deployment_dir> --fresh` "
+              f"or set GLIDER_DB")
+    print(f"  serving on http://{host}:{port}")
 
-    app.run(host=host, port=port, debug=debug)
+    # threaded=True is not optional here. The dashboard fires several API
+    # requests per page load, and the default single-threaded dev server
+    # serialises them — on Windows that showed up as connections being reset
+    # mid-body even though the handler had returned 200.
+    app.run(host=host, port=port, debug=debug, threaded=True)

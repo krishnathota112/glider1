@@ -426,6 +426,93 @@
             color: var(--text-secondary);
         }
 
+        /* ---- EGO 1.5 product + database panel ---- */
+        .ego-card { margin-top: 1.25rem; }
+        .ego-sub {
+            font-size: 0.75rem; color: var(--text-secondary);
+            margin-top: -0.35rem; margin-bottom: 0.85rem;
+            word-break: break-all;
+        }
+        .ego-badge {
+            font-family: var(--font-inter); font-size: 0.68rem;
+            font-weight: 600; letter-spacing: 0.03em;
+            padding: 0.2rem 0.55rem; border-radius: 999px;
+            border: 1px solid var(--border-color); color: var(--text-secondary);
+            text-transform: uppercase; white-space: nowrap;
+        }
+        .ego-badge.pass {
+            color: var(--accent-green); border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.10);
+        }
+        .ego-badge.fail {
+            color: var(--accent-red); border-color: var(--accent-red);
+            background: rgba(239, 68, 68, 0.10);
+        }
+        .ego-badge.warn {
+            color: var(--accent-orange); border-color: var(--accent-orange);
+            background: rgba(245, 158, 11, 0.10);
+        }
+        .ego-tabs {
+            display: flex; flex-wrap: wrap; gap: 0.35rem;
+            margin-bottom: 0.85rem;
+        }
+        .ego-tab {
+            background: transparent; border: 1px solid var(--border-color);
+            color: var(--text-secondary); font-family: var(--font-inter);
+            font-size: 0.7rem; padding: 0.3rem 0.7rem; border-radius: 6px;
+            cursor: pointer; transition: all 0.15s ease;
+        }
+        .ego-tab:hover { color: var(--text-primary); background: var(--bg-card-hover); }
+        .ego-tab.active {
+            color: var(--accent-cyan); border-color: var(--border-accent);
+            background: rgba(0, 242, 254, 0.08);
+        }
+        .ego-pane { display: none; }
+        .ego-pane.active { display: block; }
+        .ego-table-wrap { max-height: 340px; overflow: auto; }
+        .ego-pane table {
+            width: 100%; border-collapse: collapse;
+            font-family: var(--font-inter); font-size: 0.72rem;
+        }
+        .ego-pane th {
+            text-align: left; font-weight: 600; color: var(--text-secondary);
+            padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color);
+            position: sticky; top: 0; background: #131826; white-space: nowrap;
+        }
+        .ego-pane td {
+            padding: 0.35rem 0.5rem; color: var(--text-primary);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            white-space: nowrap;
+        }
+        .ego-pane td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .ego-pane td.key { color: var(--text-secondary); }
+        .ego-kv { display: grid; grid-template-columns: 210px 1fr; gap: 0.3rem 0.9rem; }
+        .ego-kv .k {
+            font-size: 0.7rem; color: var(--text-secondary);
+            font-family: var(--font-inter);
+        }
+        .ego-kv .v {
+            font-size: 0.72rem; color: var(--text-primary);
+            font-family: var(--font-inter); word-break: break-word;
+        }
+        .ego-bar {
+            display: flex; height: 7px; border-radius: 4px;
+            overflow: hidden; min-width: 90px; background: rgba(255,255,255,0.05);
+        }
+        .ego-bar span { display: block; height: 100%; }
+        .ego-note {
+            font-size: 0.7rem; color: var(--text-muted);
+            margin-top: 0.6rem; line-height: 1.5;
+        }
+        .ego-fail-item {
+            font-family: var(--font-inter); font-size: 0.7rem;
+            color: var(--accent-red); padding: 0.2rem 0;
+        }
+        .ego-warn-item {
+            font-family: var(--font-inter); font-size: 0.7rem;
+            color: var(--accent-orange); padding: 0.2rem 0;
+        }
+
         /* Main Workspace Contents */
         .main-workspace {
             display: flex;
@@ -1126,6 +1213,10 @@
                                     <span>Good (1,2)</span>
                                 </div>
                                 <div class="legend-item">
+                                    <div class="legend-color" style="background-color: var(--text-muted);"></div>
+                                    <span>No QC (0)</span>
+                                </div>
+                                <div class="legend-item">
                                     <div class="legend-color" style="background-color: var(--accent-orange);"></div>
                                     <span>Prob. Bad (3)</span>
                                 </div>
@@ -1139,6 +1230,36 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- ============================================= -->
+                    <!--  EGO 1.5 product + database panel             -->
+                    <!--  Fed by /api/ego/... and /api/db/..., i.e. the -->
+                    <!--  published NetCDF and the loaded database —    -->
+                    <!--  not the scraped summary text used above.      -->
+                    <!-- ============================================= -->
+                    <div class="glass-card ego-card" id="ego-card">
+                        <div class="section-title">
+                            <span>EGO 1.5 Product &amp; Database</span>
+                            <span class="ego-badge" id="ego-badge">checking…</span>
+                        </div>
+                        <p class="ego-sub" id="ego-source">Reading EGO file…</p>
+
+                        <div class="ego-tabs">
+                            <button class="ego-tab active" data-ego-tab="db">Database</button>
+                            <button class="ego-tab" data-ego-tab="compliance">Compliance</button>
+                            <button class="ego-tab" data-ego-tab="platform">Platform</button>
+                            <button class="ego-tab" data-ego-tab="sensors">Sensors</button>
+                            <button class="ego-tab" data-ego-tab="params">Parameters</button>
+                            <button class="ego-tab" data-ego-tab="history">History</button>
+                        </div>
+
+                        <div class="ego-pane active" id="ego-pane-db"></div>
+                        <div class="ego-pane" id="ego-pane-compliance"></div>
+                        <div class="ego-pane" id="ego-pane-platform"></div>
+                        <div class="ego-pane" id="ego-pane-sensors"></div>
+                        <div class="ego-pane" id="ego-pane-params"></div>
+                        <div class="ego-pane" id="ego-pane-history"></div>
                     </div>
                 </div>
 
@@ -1342,6 +1463,12 @@
                 // Populate QC flag table
                 populateQCTable();
 
+                // EGO product + database panel. Uses the glider_id parsed from
+                // the summary report (falling back to the folder name), which
+                // is the key the database is loaded under.
+                document.getElementById("ego-card").style.display = "block";
+                egoLoad(transect.glider_id || meta.glider_id || transect.folder_name);
+
                 // Set default/first plot
                 if (transect.plots.length > 0) {
                     const match = transect.plots.find(p => getPlotCategory(p) === activeCategoryFilter || activeCategoryFilter === 'all');
@@ -1357,6 +1484,8 @@
                 document.getElementById("visualizations-workspace").style.display = "none";
                 document.getElementById("processing-console-workspace").style.display = "flex";
                 document.getElementById("steps-card").style.display = "none";
+                // Nothing to show until the deployment has been processed.
+                document.getElementById("ego-card").style.display = "none";
 
                 // Set console UI values
                 document.getElementById("process-glider-title").innerText = `Glider Transect ${transect.folder_name}`;
@@ -1468,6 +1597,300 @@
                 `;
                 tbody.appendChild(tr);
             });
+        }
+
+        // =====================================================
+        //  EGO 1.5 product + database panel
+        //
+        //  Sourced from the published NetCDF and the loaded SQLite database
+        //  rather than the summary .txt the rest of this page scrapes, so the
+        //  numbers here are the product's own.
+        // =====================================================
+
+        const egoState = { gid: null, tab: 'db' };
+
+        function egoEsc(v) {
+            if (v === null || v === undefined || v === '') return '<span style="color:var(--text-muted)">—</span>';
+            return String(v).replace(/[&<>"]/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        }
+
+        function egoNum(v) {
+            if (v === null || v === undefined) return '—';
+            return Number(v).toLocaleString();
+        }
+
+        function egoSetBadge(text, cls) {
+            const b = document.getElementById('ego-badge');
+            b.innerText = text;
+            b.className = 'ego-badge' + (cls ? ' ' + cls : '');
+        }
+
+        function egoTable(headers, rows, aligns = []) {
+            let h = '<div class="ego-table-wrap"><table><thead><tr>';
+            headers.forEach(x => { h += `<th>${egoEsc(x)}</th>`; });
+            h += '</tr></thead><tbody>';
+            if (!rows.length) {
+                h += `<tr><td colspan="${headers.length}" style="color:var(--text-muted)">No rows</td></tr>`;
+            }
+            rows.forEach(r => {
+                h += '<tr>';
+                r.forEach((c, i) => {
+                    const cls = aligns[i] === 'n' ? ' class="num"'
+                              : aligns[i] === 'k' ? ' class="key"' : '';
+                    h += `<td${cls}>${c === null || c === undefined ? egoEsc(null) : c}</td>`;
+                });
+                h += '</tr>';
+            });
+            return h + '</tbody></table></div>';
+        }
+
+        function egoKV(pairs) {
+            let h = '<div class="ego-kv">';
+            pairs.forEach(([k, v]) => {
+                h += `<div class="k">${egoEsc(k)}</div><div class="v">${egoEsc(v)}</div>`;
+            });
+            return h + '</div>';
+        }
+
+        // Stacked good/bad/missing/no-QC bar. Widths are shares of FLAGGED
+        // points, matching how the database view computes pct_good — a point
+        // flagged 4 or 9 carries a verdict but no published value, so scaling
+        // against value counts would not sum to 100%.
+        function egoQCBar(v) {
+            const n = v.n_flagged || 0;
+            if (!n) return '';
+            const seg = (count, colour) => {
+                const pct = (100 * (count || 0) / n).toFixed(2);
+                return count ? `<span style="width:${pct}%;background:${colour}"></span>` : '';
+            };
+            return '<div class="ego-bar">'
+                + seg((v.n_good || 0) + (v.n_probably_good || 0), 'var(--accent-green)')
+                + seg(v.n_probably_bad, 'var(--accent-orange)')
+                + seg(v.n_bad, 'var(--accent-red)')
+                + seg(v.n_missing, 'var(--text-muted)')
+                + seg(v.n_no_qc, 'rgba(255,255,255,0.12)')
+                + '</div>';
+        }
+
+        function egoShowTab(tab) {
+            egoState.tab = tab;
+            document.querySelectorAll('.ego-tab').forEach(b =>
+                b.classList.toggle('active', b.dataset.egoTab === tab));
+            document.querySelectorAll('.ego-pane').forEach(p =>
+                p.classList.toggle('active', p.id === 'ego-pane-' + tab));
+        }
+
+        function egoLoading(id, msg) {
+            document.getElementById(id).innerHTML =
+                `<p class="ego-note">${egoEsc(msg)}</p>`;
+        }
+
+        async function egoLoad(gid) {
+            egoState.gid = gid;
+            egoSetBadge('checking…', '');
+            document.getElementById('ego-source').innerText = 'Reading EGO file…';
+            ['db', 'compliance', 'platform', 'sensors', 'params', 'history']
+                .forEach(t => egoLoading('ego-pane-' + t, 'Loading…'));
+
+            // Each block renders independently: one failing endpoint should not
+            // blank the whole panel.
+            egoRenderDB(gid);
+            egoRenderCompliance(gid);
+            egoRenderMetadata(gid);
+        }
+
+        async function egoRenderDB(gid) {
+            try {
+                const [depR, qcR] = await Promise.all([
+                    fetch('/api/db/deployments'),
+                    fetch(`/api/db/${encodeURIComponent(gid)}/qc`)
+                ]);
+                const dep = await depR.json();
+                const qc = await qcR.json();
+
+                if (dep.error) {
+                    document.getElementById('ego-pane-db').innerHTML =
+                        `<p class="ego-note">Database not available: ${egoEsc(dep.error)}<br>`
+                        + `Expected at <code>${egoEsc(dep.expected || '')}</code>.<br>`
+                        + `Build it with <code>python tools/load_db.py &lt;deployment_dir&gt; --fresh</code>.</p>`;
+                    return;
+                }
+
+                const row = (dep.deployments || []).find(d => String(d.glider_id) === String(gid));
+                let html = '';
+                if (row) {
+                    html += egoKV([
+                        ['Deployment', row.deployment_name],
+                        ['Window', `${row.deployment_start} → ${row.deployment_end}`],
+                        ['Observations', egoNum(row.n_observations)],
+                        ['Profiles', egoNum(row.n_profiles)],
+                        ['GPS fixes', egoNum(row.n_gps_fixes)],
+                        ['Distance over ground',
+                         row.distance_over_ground_km
+                            ? row.distance_over_ground_km.toFixed(1) + ' km (GPS fixes only)'
+                            : null],
+                        ['Max depth', row.max_depth_dbar
+                            ? row.max_depth_dbar.toFixed(1) + ' dbar' : null],
+                        ['EGO format', row.ego_format_version],
+                        ['Data mode', row.data_mode],
+                        ['RTQC tests', row.rtqc_tests_applied],
+                        ['Ingested at', row.processed_at],
+                    ]);
+                } else {
+                    html += `<p class="ego-note">Glider <b>${egoEsc(gid)}</b> is not in the database yet. `
+                          + `Load it with <code>python tools/load_db.py &lt;deployment_dir&gt; --fresh</code>.</p>`;
+                }
+
+                if (qc && qc.variables) {
+                    const rows = qc.variables.map(v => [
+                        `<b>${egoEsc(v.variable_name)}</b>`,
+                        v.family,
+                        egoNum(v.n_values),
+                        egoNum(v.n_flagged),
+                        v.pct_good === null || v.pct_good === undefined
+                            ? '—' : v.pct_good.toFixed(1) + '%',
+                        egoNum(v.n_bad),
+                        egoNum(v.n_missing),
+                        egoNum(v.n_no_qc),
+                        egoNum(v.n_adjusted),
+                        egoQCBar(v),
+                    ]);
+                    html += '<div style="margin-top:1rem"></div>'
+                         + egoTable(
+                        ['Variable', 'Table', 'Values', 'Flagged', 'Good%',
+                         'Bad', 'Missing', 'No QC', 'Adjusted', ''],
+                        rows,
+                        ['', 'k', 'n', 'n', 'n', 'n', 'n', 'n', 'n', '']);
+                    html += '<p class="ego-note">Good% is a share of <b>flagged</b> points. '
+                          + 'Values and Flagged differ on purpose: a point flagged 4 (bad) or 9 (missing) '
+                          + 'carries a QC verdict but no published value. '
+                          + 'CNDC is flag 0 throughout — it is back-calculated and this pipeline runs no '
+                          + 'dedicated conductivity test, so "no QC performed" is the accurate statement.</p>';
+                }
+                document.getElementById('ego-pane-db').innerHTML = html;
+            } catch (e) {
+                document.getElementById('ego-pane-db').innerHTML =
+                    `<p class="ego-note">Could not load database view: ${egoEsc(e.message)}</p>`;
+            }
+        }
+
+        async function egoRenderCompliance(gid) {
+            try {
+                const r = await fetch(`/api/ego/${encodeURIComponent(gid)}/compliance`);
+                const d = await r.json();
+                if (d.error) {
+                    egoSetBadge('no EGO file', 'warn');
+                    document.getElementById('ego-pane-compliance').innerHTML =
+                        `<p class="ego-note">${egoEsc(d.error)}</p>`;
+                    return;
+                }
+                egoSetBadge(d.overall_compliant ? 'EGO 1.5 compliant' : 'not compliant',
+                            d.overall_compliant ? 'pass' : 'fail');
+
+                let html = `<p class="ego-note">Validated live against <code>${egoEsc(d.rules_file)}</code>, `
+                         + `the official EGO 1.5 checker rules.</p>`;
+                Object.entries(d.results).forEach(([level, res]) => {
+                    html += `<div style="margin-top:0.8rem">`
+                         + `<b style="font-size:0.75rem">${level.toUpperCase()}</b> `
+                         + `<span class="ego-badge ${res.compliant ? 'pass' : 'fail'}">`
+                         + `${res.compliant ? 'pass' : 'fail'}</span>`
+                         + `<div class="ego-note">${egoEsc(res.file)} — `
+                         + `${egoNum(res.checks_passed)} checks passed, `
+                         + `${res.failures.length} mandatory failure(s), `
+                         + `${res.warnings.length} warning(s)</div>`;
+                    res.failures.forEach(f => {
+                        html += `<div class="ego-fail-item">FAIL ${egoEsc(f)}</div>`;
+                    });
+                    res.warnings.forEach(w => {
+                        html += `<div class="ego-warn-item">warn ${egoEsc(w)}</div>`;
+                    });
+                    html += '</div>';
+                });
+                document.getElementById('ego-pane-compliance').innerHTML = html;
+            } catch (e) {
+                egoSetBadge('check failed', 'warn');
+                document.getElementById('ego-pane-compliance').innerHTML =
+                    `<p class="ego-note">Could not run the checker: ${egoEsc(e.message)}</p>`;
+            }
+        }
+
+        async function egoRenderMetadata(gid) {
+            try {
+                const r = await fetch(`/api/ego/${encodeURIComponent(gid)}/metadata`);
+                const d = await r.json();
+                if (d.error) {
+                    ['platform', 'sensors', 'params', 'history'].forEach(t =>
+                        egoLoading('ego-pane-' + t, d.error));
+                    return;
+                }
+
+                document.getElementById('ego-source').innerHTML =
+                    `<code>${egoEsc(d.file)}</code>`;
+
+                const g = d.global_attributes || {};
+                const p = d.platform || {};
+                const dep = d.deployment || {};
+                document.getElementById('ego-pane-platform').innerHTML =
+                    egoKV([
+                        ['PLATFORM_FAMILY', p.PLATFORM_FAMILY],
+                        ['PLATFORM_TYPE', p.PLATFORM_TYPE],
+                        ['PLATFORM_MAKER', p.PLATFORM_MAKER],
+                        ['GLIDER_SERIAL_NO', p.GLIDER_SERIAL_NO],
+                        ['WMO_INST_TYPE', p.WMO_INST_TYPE],
+                        ['POSITIONING_SYSTEM', (p.POSITIONING_SYSTEM || []).join(', ')],
+                        ['TRANS_SYSTEM', (p.TRANS_SYSTEM || []).join(', ')],
+                        ['OPERATING_INSTITUTION', p.OPERATING_INSTITUTION],
+                        ['—', '—'],
+                        ['DEPLOYMENT_START', `${dep.DEPLOYMENT_START_DATE || ''}  `
+                            + `${dep.DEPLOYMENT_START_LATITUDE ?? ''}, ${dep.DEPLOYMENT_START_LONGITUDE ?? ''}`],
+                        ['DEPLOYMENT_END', `${dep.DEPLOYMENT_END_DATE || ''}  `
+                            + `${dep.DEPLOYMENT_END_LATITUDE ?? ''}, ${dep.DEPLOYMENT_END_LONGITUDE ?? ''}`],
+                        ['—', '—'],
+                        ['institution', g.institution],
+                        ['platform_code', g.platform_code],
+                        ['data_mode', g.data_mode],
+                        ['format_version', g.format_version],
+                        ['qc_manual', g.qc_manual],
+                        ['area', g.area],
+                        ['project_name', g.project_name],
+                        ['wmo_platform_code', g.wmo_platform_code],
+                    ]);
+
+                document.getElementById('ego-pane-sensors').innerHTML = egoTable(
+                    ['SENSOR', 'MAKER', 'MODEL', 'SERIAL', 'MOUNT', 'ORIENTATION'],
+                    (d.sensors || []).map(s => [
+                        `<b>${egoEsc(s.SENSOR)}</b>`, egoEsc(s.SENSOR_MAKER),
+                        egoEsc(s.SENSOR_MODEL), egoEsc(s.SENSOR_SERIAL_NO),
+                        egoEsc(s.SENSOR_MOUNT), egoEsc(s.SENSOR_ORIENTATION),
+                    ]))
+                    + '<p class="ego-note">Names are EGO reference tables 25 (sensor), '
+                    + '26 (maker) and 27 (model). Serial numbers come from the glider’s '
+                    + 'own <code>autoexec.mi</code> hardware block.</p>';
+
+                document.getElementById('ego-pane-params').innerHTML = egoTable(
+                    ['PARAMETER', 'SENSOR', 'UNITS', 'ACCURACY', 'RESOLUTION', 'MODE'],
+                    (d.parameters || []).map(x => [
+                        `<b>${egoEsc(x.PARAMETER)}</b>`, egoEsc(x.PARAMETER_SENSOR),
+                        egoEsc(x.PARAMETER_UNITS), egoEsc(x.PARAMETER_ACCURACY),
+                        egoEsc(x.PARAMETER_RESOLUTION), egoEsc(x.PARAMETER_DATA_MODE),
+                    ]));
+
+                document.getElementById('ego-pane-history').innerHTML = egoTable(
+                    ['INST', 'STEP', 'SOFTWARE', 'REL', 'DATE', 'ACTION', 'PARAMETER', 'QCTEST'],
+                    (d.history || []).map(h => [
+                        egoEsc(h.HISTORY_INSTITUTION), egoEsc(h.HISTORY_STEP),
+                        egoEsc(h.HISTORY_SOFTWARE), egoEsc(h.HISTORY_SOFTWARE_RELEASE),
+                        egoEsc(h.HISTORY_DATE), egoEsc(h.HISTORY_ACTION),
+                        egoEsc(h.HISTORY_PARAMETER), egoEsc(h.HISTORY_QCTEST),
+                    ]))
+                    + '<p class="ego-note">ACTION <code>QCP$</code> records the RTQC tests '
+                    + 'performed per parameter (EGO reference table 7); the test identifiers '
+                    + 'are in HISTORY_QCTEST.</p>';
+            } catch (e) {
+                ['platform', 'sensors', 'params', 'history'].forEach(t =>
+                    egoLoading('ego-pane-' + t, 'Could not load metadata: ' + e.message));
+            }
         }
 
         function clearPlotViewer() {
@@ -1591,7 +2014,14 @@
         }
 
         // Setup event listeners
+        function setupEgoListeners() {
+            document.querySelectorAll('.ego-tab').forEach(btn => {
+                btn.addEventListener('click', () => egoShowTab(btn.dataset.egoTab));
+            });
+        }
+
         function setupEventListeners() {
+            setupEgoListeners();
             // Processing trigger button
             document.getElementById("btn-start-process").onclick = () => {
                 startProcessing();
