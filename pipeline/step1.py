@@ -20,6 +20,7 @@ from config import (
     TEMP_MIN, TEMP_MAX, COND_MIN, PRES_MIN,
     PROFILE_FILT_SECS, PROFILE_MIN_SECS, GLIDER_ID,
 )
+import nc_format
 
 try:
     import gsw
@@ -656,99 +657,158 @@ def write_netcdf(synced, config, output_path):
                 synced[key] = synced[key][valid_time]
         t_raw = synced["time"]
 
-    time_dt = np.array([np.datetime64(int(t * 1e9), "ns") for t in t_raw])
-    ds = xr.Dataset(coords={"time": time_dt})
+    # ── Science parameters, under their canonical names ──────────────────────
+    values = {}
+    for slocum_name, canonical in nc_format.slocum_to_canonical().items():
+        if slocum_name in synced:
+            values[canonical] = np.asarray(synced[slocum_name], dtype=np.float64)
 
-    vmap = [
-        ("m_lat", "latitude"),
-        ("m_lon", "longitude"),
-        ("m_heading", "heading"),
-        ("m_pitch", "pitch"),
-        ("m_roll", "roll"),
-        ("c_wpt_lat", "waypoint_latitude"),
-        ("c_wpt_lon", "waypoint_longitude"),
-        ("sci_water_temp", "temperature"),
-        ("sci_water_cond", "conductivity"),
-        ("pressure_dbar", "pressure"),
-        ("sci_oxy4_oxygen", "oxygen_concentration"),
-        ("sci_flbbcd_chlor_units", "chlorophyll"),
-        ("sci_flbbcd_cdom_units", "cdom"),
-        ("sci_flbbcd_bb_units", "backscatter_700"),
-        ("depth", "depth"),
-        ("salinity", "salinity"),
-        ("potential_temperature", "potential_temperature"),
-        ("density", "density"),
-        ("potential_density", "potential_density"),
-        ("profile_index", "profile_index"),
-        ("profile_direction", "profile_direction"),
-    ]
+    # DOXY: the Slocum optode reports umol/L, the format requires umol/kg.
+    # Convert here, once, at the point the value is first written — so no
+    # downstream step has to know or re-do it.
+    if "DOXY" in values:
+        if "density" in synced:
+            dens_kg_per_L = np.asarray(synced["density"], dtype=np.float64) / 1000.0
+            ok = (np.isfinite(values["DOXY"]) & np.isfinite(dens_kg_per_L)
+                  & (dens_kg_per_L > 0.5))
+            conv = np.full_like(values["DOXY"], np.nan)
+            conv[ok] = values["DOXY"][ok] / dens_kg_per_L[ok]
+            n_conv = int(ok.sum())
+            before = values["DOXY"][ok]
+            values["DOXY"] = conv
+            if n_conv:
+                print(f"  DOXY: converted {n_conv:,} values umol/L -> umol/kg "
+                      f"(e.g. {before[0]:.2f} -> {conv[ok][0]:.2f})")
+        else:
+            print("  ERROR: no density available — DOXY cannot be converted to "
+                  "umol/kg. Dropping DOXY rather than writing mislabelled values.")
+            values.pop("DOXY")
 
-    for internal, nc_name in vmap:
-        if internal not in synced:
-            continue
-        attrs = {}
-        if nc_name in ncvar:
-            for k, v in ncvar[nc_name].items():
-                if k not in ("source", "coordinates", "conversion"):
-                    attrs[k] = v
-        ds[nc_name] = xr.DataArray(synced[internal].astype(np.float64), dims=["time"], attrs=attrs)
+    # ── Ancillary (derived + flight) variables ───────────────────────────────
+    anc = {}
+    for slocum_name, canonical in nc_format.slocum_to_ancillary().items():
+        if slocum_name in synced:
+            anc[canonical] = np.asarray(synced[slocum_name], dtype=np.float64)
+    if "m_lat" in synced:
+        anc["LATITUDE"] = np.asarray(synced["m_lat"], dtype=np.float64)
+    if "m_lon" in synced:
+        anc["LONGITUDE"] = np.asarray(synced["m_lon"], dtype=np.float64)
 
-    # Check optics calibration: Slocum's sci_flbbcd_*_units should already be
-    # in physical units (mg/m³, ppb, m⁻¹) from firmware calibration. But if
-    # values look like raw counts (chlorophyll max > 50 mg/m³), flag them.
-    _optics_cal_warning = False
-    for nc_name, max_plausible in [("chlorophyll", 50.0),
-                                    ("cdom", 200.0),
-                                    ("backscatter_700", 0.05),
-                                    ("oxygen_concentration", 500.0)]:
-        if nc_name in ds:
-            vmax = float(np.nanmax(ds[nc_name].values))
-            if vmax > max_plausible:
-                _optics_cal_warning = True
-                ds[nc_name].attrs["comment"] = (
-                    f"WARNING: max value ({vmax:.1f}) exceeds plausible "
-                    f"physical range. Values may be uncalibrated raw counts "
-                    f"or corrupted. Verify sensor calibration coefficients.")
-                print(f"  WARNING: {nc_name} max={vmax:.1f} exceeds "
-                      f"plausible range ({max_plausible}) — may be uncalibrated")
-            else:
-                ds[nc_name].attrs["comment"] = (
-                    "Firmware-calibrated values from glider sensor. "
-                    "No additional post-processing calibration applied.")
+    # Warn (do not silently alter) when a sensor looks uncalibrated
+    for canonical, max_plausible in (("CHLA", 50.0), ("CDOM", 200.0),
+                                     ("BBP700", 0.05), ("DOXY", 600.0)):
+        if canonical in values:
+            finite = values[canonical][np.isfinite(values[canonical])]
+            if len(finite) and float(finite.max()) > max_plausible:
+                print(f"  WARNING: {canonical} max={finite.max():.1f} exceeds "
+                      f"plausible range ({max_plausible}) — check calibration")
 
-    if "latitude" in ds and "longitude" in ds:
-        lat = ds["latitude"].values
-        lon = ds["longitude"].values
-        dlat = np.diff(np.nan_to_num(lat, nan=0))
-        dlon = np.diff(np.nan_to_num(lon, nan=0))
-        cos_lat = np.cos(np.radians(float(np.nanmean(lat))))
-        dd = np.sqrt((dlat * 111320) ** 2 + (dlon * 111320 * cos_lat) ** 2)
-        dist = np.concatenate([[0], np.cumsum(dd)])
-        ds["distance_over_ground"] = xr.DataArray(dist, dims=["time"],
-            attrs={"long_name": "distance over ground", "units": "m"})
+    # ── GPS surface fixes ────────────────────────────────────────────────────
+    gps = _gps_surface_fixes(synced)
 
-    ds.attrs = {
-        "Conventions": "CF-1.8",
-        "title": f"Glider {meta.get('glider_serial', GLIDER_ID)} L0 Timeseries",
-        "institution": meta.get("institution", "INCOIS"),
-        "source": meta.get("source", "Glider observations"),
-        "comment": meta.get("comment", ""),
-        "deployment_name": meta.get("deployment_name", ""),
-        "glider_serial": meta.get("glider_serial", ""),
-        "glider_model": meta.get("glider_model", ""),
-        "platform_type": meta.get("platform_type", "Slocum Glider"),
-        "sea_name": meta.get("sea_name", ""),
-        "processing_level": "L0 - raw decoded data, no QC applied",
-        "date_created": datetime.now(timezone.utc)
-                                .replace(tzinfo=None).isoformat() + "Z",
-    }
+    # ── Cumulative distance over ground, from the fixes only ─────────────────
+    anc["DISTANCE_OVER_GROUND"] = _distance_over_ground(t_raw, gps)
 
-    ds.to_netcdf(output_path)
+    # ── Phase ────────────────────────────────────────────────────────────────
+    phase, phase_number = _phase_arrays(synced, len(t_raw))
+
+    ds, written = nc_format.build_dataset(
+        time_sec=t_raw.astype(np.float64),
+        values=values,
+        ancillary_values=anc,
+        gps=gps,
+        phase=phase,
+        phase_number=phase_number,
+        meta=meta,
+        level="L0",
+        history_extra="decoded from Slocum binaries with dbdreader",
+    )
+    nc_format.write(ds, output_path)
+
     print(f"  L0 saved: {output_path}")
     print(f"  Size: {os.path.getsize(output_path) / 1024 / 1024:.1f} MB")
-    print(f"  Observations: {len(time_dt):,}")
+    print(f"  Observations: {len(t_raw):,}")
+    print(f"  Parameters: {', '.join(written)}")
+    print(f"  GPS fixes: {len(gps[0]):,}")
     ds.close()
     return output_path
+
+
+def _gps_surface_fixes(synced):
+    """
+    The real GPS fixes, as opposed to the interpolated position at every
+    timestamp. A Slocum only gets a fix at the surface, once per profile, so
+    these are taken at the profile boundaries.
+
+    Returning them separately is what lets distance over ground be computed
+    from ~360 real positions instead of ~1.3 million interpolated ones.
+    """
+    t = synced["time"]
+    lat = synced.get("m_lat")
+    lon = synced.get("m_lon")
+    if lat is None or lon is None:
+        return np.array([]), np.array([]), np.array([])
+
+    pi = synced.get("profile_index")
+    if pi is None:
+        ok = np.isfinite(lat) & np.isfinite(lon)
+        return t[ok], lat[ok], lon[ok]
+
+    ft, flat, flon = [], [], []
+    for p in np.unique(pi[np.isfinite(pi)]):
+        m = (pi == p) & np.isfinite(lat) & np.isfinite(lon)
+        if m.any():
+            i = np.flatnonzero(m)[0]
+            ft.append(t[i]); flat.append(lat[i]); flon.append(lon[i])
+    return np.array(ft), np.array(flat), np.array(flon)
+
+
+def _distance_over_ground(t_all, gps):
+    """
+    Cumulative km along track, stepped at the GPS fixes and held flat between
+    them. Summing every interpolated position instead is what produced the
+    Earth-circumference distances in earlier reports.
+    """
+    g_t, g_lat, g_lon = gps
+    out = np.zeros(len(t_all), dtype=np.float64)
+    if len(g_t) < 2:
+        return out
+    coslat = np.cos(np.radians(float(np.nanmean(g_lat))))
+    dlat = np.diff(g_lat) * 111.32
+    dlon = np.diff(g_lon) * 111.32 * coslat
+    seg = np.sqrt(dlat ** 2 + dlon ** 2)
+    # a leg implying >3 m/s is a bad fix, not travel
+    dt = np.diff(g_t)
+    speed = np.divide(seg * 1000.0, dt, out=np.zeros_like(seg), where=dt > 0)
+    seg[speed > 3.0] = 0.0
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    return np.interp(t_all, g_t, cum, left=0.0, right=cum[-1])
+
+
+def _phase_arrays(synced, n):
+    """
+    PHASE (reference table 9.2) and PHASE_NUMBER from the detected profiles.
+    NaNs are filled explicitly — casting them to int silently produces garbage.
+    """
+    phase = np.full(n, np.int8(6), dtype=np.int8)     # 6 = inconsistent
+    d = synced.get("profile_direction")
+    if d is not None:
+        finite = np.isfinite(d)
+        phase[finite & (d > 0)] = np.int8(1)         # descent
+        phase[finite & (d < 0)] = np.int8(4)         # ascent
+        phase[finite & (d == 0)] = np.int8(2)        # subsurface drift
+        phase[~finite] = np.int8(nc_format.FILL_QC)
+
+    pi = synced.get("profile_index")
+    if pi is None:
+        return phase, np.full(n, nc_format.FILL_INT, dtype=np.int32)
+    finite = np.isfinite(pi)
+    n_nan = int((~finite).sum())
+    if n_nan:
+        print(f"  NOTE: profile_index has {n_nan:,} NaN — "
+              f"PHASE_NUMBER filled with {nc_format.FILL_INT} there")
+    pn = np.where(finite, pi, nc_format.FILL_INT)
+    return phase, pn.astype(np.int32)
 
 
 def run_step1(out_dir=None):

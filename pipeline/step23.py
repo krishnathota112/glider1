@@ -1426,31 +1426,163 @@ def run_step23(l0_path=None, out_dir=None):
     ds = apply_argo_qc(ds, config_pressure_dbar=MAX_DEPTH_DBAR,
                        l0_nan_mask=l0_nan_mask)
 
-    ds.attrs["processing_level"] = "L1 - GliderTools QC + ARGO RTQC flags applied"
-    ds.attrs["history"] = f"L1 processed on {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} using pipeline/step23.py"
-    ds.attrs["processing_software"] = "pipeline/step23.py v1.0"
+    # ── Build canonical-format L1 output ────────────────────────────────────
+    import nc_format
+
+    t_sec = ds["time"].values.astype("datetime64[s]").astype(np.float64)
+    n = len(t_sec)
+
+    # Science parameter values — use canonical names
+    # The L0 already uses canonical names (TEMP, PSAL, etc.) since step1 now
+    # writes them directly. Map back via nc_format.
+    _canon = nc_format.params()
+    _old_to_new = {
+        "temperature": "TEMP", "salinity": "PSAL", "pressure": "PRES",
+        "conductivity": "CNDC", "oxygen_concentration": "DOXY",
+        "chlorophyll": "CHLA", "cdom": "CDOM", "backscatter_700": "BBP700",
+        "turbidity": "TURBIDITY",
+    }
+    values = {}
+    for old, new in _old_to_new.items():
+        if new in ds:          # L0 already wrote canonical names
+            values[new] = ds[new].values.astype(np.float32)
+        elif old in ds:        # fallback for older L0 files
+            values[new] = ds[old].values.astype(np.float32)
+
+    # QC flags — map from internal QC var names to canonical names
+    _qc_old_to_new = {
+        "temperature_QC": "TEMP", "salinity_QC": "PSAL",
+        "pressure_QC": "PRES", "conductivity_QC": "CNDC",
+        "oxygen_concentration_QC": "DOXY",
+        "chlorophyll_QC": "CHLA", "cdom_QC": "CDOM",
+        "backscatter_700_QC": "BBP700",
+    }
+    qc = {}
+    for old_qc, new in _qc_old_to_new.items():
+        if old_qc in ds:
+            qc[new] = ds[old_qc].values.astype(np.int8)
+        elif new + "_QC" in ds:
+            qc[new] = ds[new + "_QC"].values.astype(np.int8)
+
+    # Adjusted (processed/corrected) values
+    _adj_map = {
+        "TEMP":   ("temperature_processed",),
+        "PSAL":   ("salinity_processed",),
+        "DOXY":   ("oxygen_concentration_lag_corrected",),
+        "CHLA":   ("chlorophyll_corrected",),
+        "CDOM":   ("cdom_corrected",),
+        "BBP700": ("backscatter_700_corrected",),
+    }
+    adjusted = {}
+    for canonical, candidates in _adj_map.items():
+        for src in candidates:
+            if src in ds:
+                adjusted[canonical] = ds[src].values.astype(np.float32)
+                break
+
+    # Ancillary variables
+    _anc_map = {
+        "LATITUDE": ["LATITUDE", "latitude"],
+        "LONGITUDE": ["LONGITUDE", "longitude"],
+        "DEPTH": ["DEPTH", "depth"],
+        "DENSITY": ["DENSITY", "density"],
+        "POTENTIAL_TEMP": ["POTENTIAL_TEMP", "potential_temperature"],
+        "POTENTIAL_DENSITY": ["POTENTIAL_DENSITY", "potential_density"],
+        "HEADING": ["HEADING", "heading"],
+        "PITCH": ["PITCH", "pitch"],
+        "ROLL": ["ROLL", "roll"],
+        "WAYPOINT_LATITUDE": ["WAYPOINT_LATITUDE", "waypoint_latitude"],
+        "WAYPOINT_LONGITUDE": ["WAYPOINT_LONGITUDE", "waypoint_longitude"],
+        "DISTANCE_OVER_GROUND": ["DISTANCE_OVER_GROUND", "distance_over_ground"],
+    }
+    anc = {}
+    for canon_name, candidates in _anc_map.items():
+        for src in candidates:
+            if src in ds:
+                anc[canon_name] = ds[src].values
+                break
+
+    # GPS surface fixes from the ancillary lat/lon + profile_index
+    _pi = (ds["profile_index"].values if "profile_index" in ds
+           else ds["PROFILE_NUMBER"].values if "PROFILE_NUMBER" in ds
+           else None)
+    _lat = anc.get("LATITUDE")
+    _lon = anc.get("LONGITUDE")
+    if _pi is not None and _lat is not None and _lon is not None:
+        ft, flat, flon = [], [], []
+        for p in np.unique(_pi[np.isfinite(_pi)]):
+            m = (_pi == p) & np.isfinite(_lat) & np.isfinite(_lon)
+            if m.any():
+                i = np.flatnonzero(m)[0]
+                ft.append(t_sec[i]); flat.append(_lat[i]); flon.append(_lon[i])
+        gps = (np.array(ft), np.array(flat), np.array(flon))
+    else:
+        gps = (None, None, None)
+
+    # Phase
+    _pd = (ds["profile_direction"].values if "profile_direction" in ds
+           else ds["PHASE"].values if "PHASE" in ds else None)
+    phase = np.full(n, np.int8(6), dtype=np.int8)
+    if _pd is not None:
+        finite = np.isfinite(_pd)
+        phase[finite & (_pd > 0)] = np.int8(1)
+        phase[finite & (_pd < 0)] = np.int8(4)
+        phase[finite & (_pd == 0)] = np.int8(2)
+    _pi2 = _pi if _pi is not None else np.full(n, nc_format.FILL_INT)
+    phase_number = np.where(np.isfinite(_pi2), _pi2, nc_format.FILL_INT).astype(np.int32)
+
+    # Load deployment meta for global attrs
+    meta_cfg = {}
+    try:
+        if os.path.exists(DEPLOY_YAML):
+            import yaml as _yaml
+            with open(DEPLOY_YAML) as _f:
+                _yml = _yaml.safe_load(_f) or {}
+            meta_cfg = _yml.get("metadata", {})
+    except Exception:
+        pass
+    if not meta_cfg.get("glider_serial"):
+        meta_cfg["glider_serial"] = GLIDER_ID
+
+    ds_out, written = nc_format.build_dataset(
+        time_sec=t_sec,
+        values=values,
+        ancillary_values=anc,
+        gps=gps,
+        phase=phase,
+        phase_number=phase_number,
+        meta=meta_cfg,
+        level="L1",
+        qc=qc,
+        adjusted=adjusted,
+        rtqc_tests="TEST002 TEST003 TEST005 TEST006 TEST008 TEST009 TEST013 TEST014 TEST016 TEST019",
+    )
 
     if out_dir is None:
         out_dir = OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
     l1_path = os.path.join(out_dir, f"incois_glider_{GLIDER_ID}_L1.nc")
     print(f"\n  Saving L1: {l1_path}")
-    ds.to_netcdf(l1_path, mode="w", format="NETCDF4")
+    nc_format.write(ds_out, l1_path)
 
     elapsed = time.time() - t0
     print(f"\n  L1 saved: {os.path.getsize(l1_path) / 1024 / 1024:.1f} MB")
+    print(f"  Parameters: {', '.join(written)}")
     print(f"  QC Flag Summary:")
-    for var in sorted(ds.data_vars):
-        if var.endswith("_QC"):
-            qc = ds[var].values.astype(int)
-            good = int(np.sum(qc == 1))
-            prob_bad = int(np.sum(qc == 3))
-            bad = int(np.sum(qc == 4))
-            missing = int(np.sum(qc == 9))
-            pct_good = 100.0 * good / len(qc) if len(qc) > 0 else 0
-            print(f"    {var:40s} Good:{good:>8,} ({pct_good:5.1f}%)  PBad:{prob_bad:>6,}  Bad:{bad:>6,}  Miss:{missing:>6,}")
+    for canonical in written:
+        qc_var = f"{canonical}_QC"
+        if qc_var in ds_out:
+            q = ds_out[qc_var].values.astype(int)
+            good     = int(np.sum(q == 1))
+            prob_bad = int(np.sum(q == 3))
+            bad      = int(np.sum(q == 4))
+            missing  = int(np.sum(q == 9))
+            pct_good = 100.0 * good / len(q) if len(q) > 0 else 0
+            print(f"    {qc_var:40s} Good:{good:>8,} ({pct_good:5.1f}%)  "
+                  f"PBad:{prob_bad:>6,}  Bad:{bad:>6,}  Miss:{missing:>6,}")
 
     ds.close()
+    ds_out.close()
     print(f"\n  STEP 2/3 COMPLETE in {elapsed:.1f}s")
     return l1_path
 
