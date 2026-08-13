@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+    #!/usr/bin/env python3
 """
 step4.py - Profile splitting and 2D grid generation.
 
@@ -106,12 +106,15 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
         return 0
     ds = xr.open_dataset(nc_path, engine="netcdf4")
 
-    if "profile_index" not in ds:
+    # Support both old internal name and new canonical name
+    _pi_var = ("profile_index" if "profile_index" in ds
+               else "PHASE_NUMBER" if "PHASE_NUMBER" in ds else None)
+    if _pi_var is None:
         print("  WARNING: no profile_index — cannot split profiles")
         ds.close()
         return 0
 
-    pi = ds.profile_index.values
+    pi = ds[_pi_var].values
     unique = np.unique(pi[np.isfinite(pi)])
     n = len(unique)
 
@@ -132,7 +135,7 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
         ds_masked = ds
 
     for p_num in unique:
-        mask = (ds_masked.profile_index.values == p_num)
+        mask = (ds_masked[_pi_var].values == p_num)
         prof = ds_masked.isel(time=mask)
         prof.attrs["profile_id"] = int(p_num)
         if "profile_direction" in prof:
@@ -255,18 +258,27 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
         return None
     ds = xr.open_dataset(nc_path, engine="netcdf4")
 
-    if "profile_index" not in ds:
+    # Support both old internal name and new canonical name
+    _pi_var = ("profile_index" if "profile_index" in ds
+               else "PHASE_NUMBER" if "PHASE_NUMBER" in ds else None)
+    if _pi_var is None:
         print(f"  WARNING: no profile_index in {nc_path} — cannot grid")
         ds.close()
         return None
 
-    pi = ds.profile_index.values
+    pi = ds[_pi_var].values
     unique = np.unique(pi[np.isfinite(pi)])
     n = len(unique)
 
     vars_to_grid = _get_vars_to_grid(ds)
 
-    max_depth = float(np.nanmax(ds.depth.values))
+    # Support DEPTH or depth
+    _depth_var = "depth" if "depth" in ds else "DEPTH" if "DEPTH" in ds else None
+    if _depth_var is None:
+        print(f"  WARNING: no depth variable in {nc_path} — cannot grid")
+        ds.close()
+        return None
+    max_depth = float(np.nanmax(ds[_depth_var].values))
     if np.isnan(max_depth) or max_depth < 10:
         max_depth = 1000.0
     depth_centers = np.arange(DEPTH_BIN / 2.0, max_depth + DEPTH_BIN / 2.0, DEPTH_BIN)
@@ -287,7 +299,7 @@ def make_grid(nc_path, out_dir, grid_filename, apply_qc=False):
         t_arr = ds.time.values[mask].astype("datetime64[s]").astype(float)
         p_times.append(float(np.nanmean(t_arr)) if len(t_arr) > 0 else np.nan)
 
-        d_arr = ds.depth.values[mask]
+        d_arr = ds[_depth_var].values[mask]
         prof_idx = np.where(mask)[0]
 
         for var in vars_to_grid:

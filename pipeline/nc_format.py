@@ -599,6 +599,15 @@ def build_dataset(time_sec, values, ancillary_values, gps, phase, phase_number,
 
     ds = xr.Dataset(dv)
 
+    # Add lowercase 'time' as an alias so downstream code that opens
+    # this file and does ds["time"] still works without modification.
+    # This is a compatibility bridge — the canonical name is TIME.
+    if "TIME" in ds:
+        t_vals = ds["TIME"].values
+        # Convert seconds-since-epoch back to datetime64 for xarray compatibility
+        t_dt64 = (t_vals * 1e9).astype("datetime64[ns]")
+        ds = ds.assign_coords(time=("TIME", t_dt64))
+
     lat_all = ancillary_values.get("LATITUDE")
     lon_all = ancillary_values.get("LONGITUDE")
     lat_all = np.asarray(g_lat) if lat_all is None else lat_all

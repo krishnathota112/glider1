@@ -23,6 +23,33 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import OUTPUT_DIR, GLIDER_ID
 
+
+def _get_time(ds):
+    """
+    Get time values from a dataset, resolving both 'time' (old internal format)
+    and 'TIME' (new canonical format). Returns datetime64 array.
+    """
+    if "time" in ds:
+        return ds["time"].values
+    if "TIME" in ds:
+        # TIME is stored as seconds since epoch in the new format
+        t_sec = ds["TIME"].values
+        if np.issubdtype(t_sec.dtype, np.floating):
+            return (t_sec * 1e9).astype("datetime64[ns]")
+        return t_sec
+    raise KeyError("No 'time' or 'TIME' coordinate found in dataset")
+
+
+def _get_var(ds, *names):
+    """
+    Get a variable's values from a dataset, trying multiple name candidates.
+    Returns (values_array, name_found) or (None, None).
+    """
+    for name in names:
+        if name in ds:
+            return ds[name].values, name
+    return None, None
+
 try:
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
