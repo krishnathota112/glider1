@@ -997,12 +997,43 @@
             </div>
             
             <div class="system-status">
+                <!-- Combined-database status + ingest control. Ingestion
+                     appends into ONE SQLite file: meta is keyed on glider_id
+                     and every write is ON CONFLICT DO UPDATE, so loading a new
+                     deployment leaves the others alone and re-loading one
+                     refreshes it rather than duplicating rows. -->
+                <div class="status-pill" id="db-status-pill" title="Combined EGO database">
+                    <div class="status-dot"></div>
+                    <span id="db-status-text">Database &hellip;</span>
+                </div>
+                <button class="list-tab" id="btn-ingest-all"
+                        style="margin-left:.75rem; cursor:pointer;"
+                        title="Load every ready deployment into the combined database">
+                    Ingest All
+                </button>
                 <div class="status-pill">
                     <div class="status-dot"></div>
                     <span>System Online</span>
                 </div>
             </div>
         </header>
+
+        <!-- Ingest progress strip: hidden until an ingest is running -->
+        <div id="ingest-panel" class="glass-card"
+             style="display:none; margin-bottom:1.5rem;">
+            <div class="section-title">
+                <span>Database Ingestion</span>
+                <span id="ingest-pct" style="margin-left:auto; font-variant-numeric:tabular-nums;">0%</span>
+            </div>
+            <div style="height:6px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden;">
+                <div id="ingest-bar"
+                     style="height:100%; width:0%; background:var(--accent, #4ea1ff); transition:width .3s;"></div>
+            </div>
+            <pre id="ingest-log"
+                 style="margin-top:.75rem; max-height:180px; overflow:auto;
+                        font-size:.78rem; line-height:1.45; white-space:pre-wrap;
+                        color:var(--text-muted);"></pre>
+        </div>
 
         <!-- Main Grid Layout -->
         <div class="dashboard-grid">
@@ -1339,11 +1370,139 @@
         let activeListTab = 'processed'; // 'processed' or 'unprocessed'
         let statusPollInterval = null;
 
+        let ingestPollInterval = null;
+
         // Load data on page load
         document.addEventListener("DOMContentLoaded", () => {
             fetchTransects(true);
             setupEventListeners();
+            refreshDbStatus();
+            setupIngestControls();
+            // Recover the panel if an ingest was already running when this
+            // page loaded (e.g. started from another tab, or --ingest-now).
+            pollIngestOnce(true);
         });
+
+        // ── Combined database status ────────────────────────────────
+        function refreshDbStatus() {
+            fetch('/api/db/summary')
+                .then(r => r.json())
+                .then(d => {
+                    const el = document.getElementById('db-status-text');
+                    if (!el) return;
+                    if (!d.exists) {
+                        el.textContent = 'Database empty';
+                        return;
+                    }
+                    el.textContent =
+                        `${d.n_deployments} deployment${d.n_deployments === 1 ? '' : 's'} · ` +
+                        `${d.n_observations.toLocaleString()} obs · ${d.size_mb} MB`;
+                    const pill = document.getElementById('db-status-pill');
+                    if (pill) {
+                        pill.title =
+                            `${d.database}\ncore: ${(d.core_params || []).join(', ')}` +
+                            `\nbgc:  ${(d.bgc_params || []).join(', ')}`;
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // ── Ingestion ───────────────────────────────────────────────
+        function setupIngestControls() {
+            const btn = document.getElementById('btn-ingest-all');
+            if (!btn) return;
+            btn.addEventListener('click', () => startIngest({ all: true }));
+        }
+
+        function startIngest(body) {
+            const btn = document.getElementById('btn-ingest-all');
+            if (btn) { btn.disabled = true; btn.textContent = 'Ingesting…'; }
+
+            fetch('/api/ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+                .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, d })))
+                .then(({ ok, status, d }) => {
+                    if (!ok) {
+                        // Surface the server's own reason (409 already running,
+                        // 404 nothing ready) rather than a generic failure.
+                        showIngestPanel(true);
+                        document.getElementById('ingest-log').textContent =
+                            `${status}: ${d.error || 'ingestion could not start'}` +
+                            (d.hint ? `\n${d.hint}` : '');
+                        resetIngestButton();
+                        return;
+                    }
+                    showIngestPanel(true);
+                    startIngestPolling();
+                })
+                .catch(err => {
+                    showIngestPanel(true);
+                    document.getElementById('ingest-log').textContent =
+                        `request failed: ${err}`;
+                    resetIngestButton();
+                });
+        }
+
+        function resetIngestButton() {
+            const btn = document.getElementById('btn-ingest-all');
+            if (btn) { btn.disabled = false; btn.textContent = 'Ingest All'; }
+        }
+
+        function showIngestPanel(visible) {
+            const p = document.getElementById('ingest-panel');
+            if (p) p.style.display = visible ? '' : 'none';
+        }
+
+        function startIngestPolling() {
+            if (ingestPollInterval) clearInterval(ingestPollInterval);
+            ingestPollInterval = setInterval(() => pollIngestOnce(false), 2000);
+        }
+
+        function pollIngestOnce(silentIfIdle) {
+            fetch('/api/ingest/status')
+                .then(r => r.json())
+                .then(st => {
+                    const running = st.running;
+                    const hasHistory = (st.done || []).length ||
+                                       (st.errors || []).length;
+
+                    if (silentIfIdle && !running && !hasHistory) return;
+
+                    showIngestPanel(true);
+
+                    const bar = document.getElementById('ingest-bar');
+                    const pct = document.getElementById('ingest-pct');
+                    const log = document.getElementById('ingest-log');
+                    if (bar) bar.style.width = `${st.progress}%`;
+                    if (pct) {
+                        pct.textContent = running
+                            ? `${st.progress}%  ${st.current || ''}`
+                            : `${st.progress}%`;
+                    }
+                    if (log) {
+                        log.textContent = st.log || '';
+                        log.scrollTop = log.scrollHeight;
+                    }
+
+                    if (running && !ingestPollInterval) startIngestPolling();
+
+                    if (!running) {
+                        if (ingestPollInterval) {
+                            clearInterval(ingestPollInterval);
+                            ingestPollInterval = null;
+                        }
+                        resetIngestButton();
+                        // The set of loaded deployments just changed, so pull
+                        // the summary and the transect list again.
+                        refreshDbStatus();
+                        fetchTransects(false);
+                    }
+                })
+                .catch(() => {});
+        }
 
         // Fetch data from Flask API
         function fetchTransects(selectFirst = false) {

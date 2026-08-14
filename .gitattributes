@@ -1,0 +1,39 @@
+# Line-ending policy.
+#
+# core.autocrlf is true on the Windows dev machine, which rewrites checked-out
+# files to CRLF. For shell scripts that is fatal: the kernel reads the shebang
+# including the trailing \r and reports
+#     bad interpreter: /usr/bin/env bash^M: no such file or directory
+# so these must stay LF regardless of the client's autocrlf setting.
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# systemd unit files are parsed on Linux too.
+*.service text eol=lf
+
+# Python is run on both platforms; LF is safe everywhere and keeps diffs clean.
+*.py    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Windows-only helpers genuinely want CRLF.
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary / large data: never touch, never diff.
+*.nc    binary
+*.db    binary
+*.db-wal binary
+*.db-shm binary
+*.pdf   binary
+*.xlsx  binary
+*.mat   binary
+*.png   binary
+*.dbd   binary
+*.ebd   binary
+*.dcd   binary
+*.ecd   binary

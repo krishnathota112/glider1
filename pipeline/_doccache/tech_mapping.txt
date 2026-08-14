@@ -1,0 +1,34 @@
+
+===== SHEET: Feuille 1  (28x17) =====
+Technical variables to be added to Coriolis decoder																
+Objective : propose new variables to add to Coriolis / EGO processing chain in order to be able to do DM QC from post-mission data (flight model, depth-avearge current, thermal lag)																
+				SLOCUM		SEAGLIDER		SEAEXPLORER				SLOCUM		SEAGLIDER		SEAEXPLORER
+(var name suggestion)	variable generic name	unit	usage	variable name	unit	variable name	unit	variable name	unit		Volume (m3)	55.2 G1 short deep		52 kg in air		59 kg in air
+TECH_heading	heading	°	flight model	m_heading	degree	eng_head	degrees	Heading	degree		(source G; Krahman)	63.8 G1 long deep				
+TECH_pitch	picth	°	flight model	m_pitch	degree	eng_pitchAng	degrees	Pitch	degree			61.0 G1 Microrider				
+TECH_roll	roll	°	flight model	m_roll	degree	eng_rollAng	degrees	Roll	degree			57.8 G2 short deep				
+TECH_ballast_pumped	ballast pumped	cm3	flight model	"m_de_oil_vol (deep slocum)
+m_ballast_pumped (shallow)"	cm3	eng_vbdCC	cm3	BallastPos	cm3			72.4 G2 long deep				
+some optionnal variables												59.3 G2 SUNA				
+TECH_pitch_C	picth (command)	°	flight model (optional)	m_pitch	degree	eng_pitchCtl	degrees					50.5 G1 short shallow				
+TECH_roll_C	roll (command)	°	flight model (optional)	c_roll	degree	eng_rollCtl	degrees									
+TECH_heading_C	heading (target)	°	flight model (optional)	c_heading	degree			DesiredH	degree							
+TECH_ballast_pumped_C	ballast pumped (command)	cm3	phase derivation (optional)	"c_de_oil_vol (deep slocum)
+c_ballast_pumped (shallow)"	cm3	gc_vbd_ctl	cm	BallastCmd	cm3							
+TECH_battery_position	linear battery position	m	flight model (optional)	m_battpos	inches			LinPos	mm							
+TECH_battery_position_C	linear battery position (command)	m	flight model (optional)	c_battpos	inches			LinCmd	mm							
+TECH_battery_rotation	battery rotation angle	°	flight model (optional)					AngPos								
+TECH_battery_rotation_C	battery rotation angle (command)	°	flight model (optional)					AngCmd								
+TECH_fin	fin		flight model (optional)	m_fin												
+TECH_fin_C	fin (command)		flight model (optional)	c_fin												
+																
+Near-real time depth average current for different platform																
+				SLOCUM		SEAGLIDER		SEAEXPLORER								
+	variable generic name	unit	usage	variable name	unit	variable name	unit	variable name	unit							
+WATERCURRENTS_TIME																
+WATERCURRENTS_LATITUDE																
+WATERCURRENTS_LATITUDE																
+WATERCURRENTS_U	depth-average current estimate	m/s		"m_water_vx
+m_final_water_vx"				*		* : pas transmis						
+WATERCURRENTS_V	depth-average current estimate	m/s		"m_water_vy
+m_final_water_vy"				*								

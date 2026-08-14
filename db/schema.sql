@@ -18,10 +18,17 @@
 --  a deployment carrying NITRATE or PH_IN_SITU_TOTAL gets those columns
 --  automatically.
 --
---  All writes are idempotent: observation_id is a deterministic hash of
+--  All writes are idempotent: observation_id is derived from
 --  (glider_id, timestamp) and every insert is ON CONFLICT DO UPDATE.
 --  DO UPDATE, never INSERT OR REPLACE: with foreign_keys=ON, REPLACE deletes
 --  the existing row first, which cascades and would wipe the child rows.
+--
+--  observation_id is a READABLE composite key, not a hash:
+--      <glider_id>_<YYYYMMDDThhmmssZ>      e.g. 1126_20250203T135900Z
+--  It is derived from exactly the same two fields a hash would use, so it is
+--  just as deterministic and just as idempotent, but you can read a row's
+--  provenance straight out of the column in a SQL browser. The EGO TIME axis
+--  is strictly monotonic within a file, so (glider_id, timestamp) is unique.
 -- ============================================================
 
 PRAGMA foreign_keys = ON;
@@ -54,12 +61,12 @@ CREATE TABLE IF NOT EXISTS meta (
 -- ------------------------------------------------------------
 --  observation — one row per (glider_id, timestamp)
 --
---  observation_id is a deterministic 63-bit hash of (glider_id, timestamp),
---  declared INTEGER PRIMARY KEY so SQLite aliases it to the rowid; joins from
---  core/bgc then hit the B-tree directly with no secondary index.
+--  observation_id is the readable "<glider_id>_<compact ISO8601>" key
+--  described above. core/bgc reference it, so a join shows which glider and
+--  which instant a measurement row belongs to without reaching back here.
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observation (
-    observation_id   INTEGER PRIMARY KEY,
+    observation_id   TEXT    PRIMARY KEY,
     glider_id        TEXT    NOT NULL
                          REFERENCES meta(glider_id) ON DELETE CASCADE,
     timestamp        TEXT    NOT NULL,

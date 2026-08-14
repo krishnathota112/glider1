@@ -49,9 +49,16 @@ QC_LABELS = {
 
 
 def db_path() -> str:
-    """Database location, overridable with GLIDER_DB."""
+    """
+    Database location, overridable with GLIDER_DB.
+
+    Default matches db/load_deployment.py's default (`glider_rtqc.db`). These
+    were previously different files — the loader wrote glider_rtqc.db while
+    this blueprint looked for glider_ego.db — so every /api/db endpoint
+    reported "database not found" no matter how many deployments were loaded.
+    """
     return os.path.abspath(os.environ.get(
-        "GLIDER_DB", os.path.join(_REPO_ROOT, "glider_ego.db")))
+        "GLIDER_DB", os.path.join(_REPO_ROOT, "glider_rtqc.db")))
 
 
 def _connect() -> sqlite3.Connection | None:
@@ -84,7 +91,8 @@ def _no_db():
     return jsonify({
         "error": "database not found",
         "expected": db_path(),
-        "hint": "Build it with: python tools/load_db.py <deployment_dir> --fresh",
+        "hint": "Ingest a deployment from the dashboard, or run: "
+                "python -m db.load_deployment --ego-dir <deployment_dir>",
     }), 503
 
 
@@ -486,8 +494,17 @@ def ego_compliance(gid):
     try:
         from tools.ego_checker import DEFAULT_RULES, check_file
     except ImportError:
-        sys.path.insert(0, os.path.join(_REPO_ROOT, "tools"))
-        from ego_checker import DEFAULT_RULES, check_file  # type: ignore
+        try:
+            sys.path.insert(0, os.path.join(_REPO_ROOT, "tools"))
+            from ego_checker import DEFAULT_RULES, check_file  # type: ignore
+        except ImportError:
+            # The checker is optional. Return 501 rather than a 500 traceback
+            # so the dashboard can hide the compliance panel instead of
+            # showing an error the user cannot act on.
+            return jsonify({
+                "error": "EGO compliance checker not installed",
+                "detail": "tools/ego_checker.py is absent",
+            }), 501
 
     if not os.path.exists(DEFAULT_RULES):
         return jsonify({"error": "EGO rules XML not found",

@@ -2,16 +2,32 @@
 """
 load_deployment.py — ingest EGO 1.5 NetCDF files into SQLite.
 
-Schema: Pattern A (wide core + tall bgc)
-  core: one row per observation with fixed columns (TEMP, TEMP_QC, PSAL, ...)
-  bgc:  one row per (observation_id, variable_name) for open-ended sensors
+Schema: wide core + wide bgc
+  core: one row per observation, four named columns per C-EGO parameter
+        (PRES, PRES_QC, PRES_ADJUSTED, PRES_ADJUSTED_QC, TEMP, ...)
+  bgc:  one row per observation, four named columns per B-EGO parameter
+
+There is no `variable_name` column and no pivot view: both tables read
+directly in a SQL browser. The column list is generated from the EGO
+PARAMETER array at load time, so a deployment carrying a new sensor gets its
+columns automatically without a hardcoded list.
+
+core holds exactly the four C-EGO parameters reported by the CTD sensor —
+PRES, TEMP, CNDC, PSAL — per the EGO format manual section 2.3.5:
+
+    "Core parameters, C-EGO <PARAM>: these are parameters reported by the CTD
+     sensor (i.e. PRES, TEMP, CNDC and PSAL)"
+
+Everything else in the EGO PARAMETER array goes to bgc. Note that DEPTH is
+NOT a core parameter: it never appears as a <PARAM> in the manual, carries no
+_QC or _ADJUSTED triplet, and is a derived vertical coordinate (the EGO Z axis
+is PRES, with PRES:axis="Z").
 
 The EGO file is the SINGLE source of truth for variable names and values.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import sqlite3
@@ -32,9 +48,22 @@ SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.s
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def make_observation_id(glider_id: str, timestamp_iso: str) -> int:
-    digest = hashlib.sha256(f"{glider_id}|{timestamp_iso}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
+def make_observation_id(glider_id: str, timestamp_iso: str) -> str:
+    """
+    Readable, deterministic observation key: <glider_id>_<YYYYMMDDThhmmssZ>.
+
+    Derived from the same (glider_id, timestamp) pair a hash would consume, so
+    it is equally deterministic and re-loading the same file still upserts onto
+    the same rows. Unlike a hash it is legible in a SQL browser, which is the
+    whole point: a measurement row states which glider and which instant it
+    came from without a join back to `observation`.
+
+    The EGO TIME axis is strictly monotonic within a file (verified: 160393
+    unique values out of 160393 for glider 1126), so the pair is unique.
+    """
+    compact = (timestamp_iso.replace("-", "").replace(":", "")
+                            .split(".")[0].rstrip("Z"))
+    return f"{glider_id}_{compact}Z"
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -96,52 +125,124 @@ def _build_gps_fix_set(nc) -> set:
 
 # ── File discovery ───────────────────────────────────────────────────────────
 
-def find_ego_files(ego_dir: str, verbose: bool = True) -> dict:
+# Subdirectories of a deployment's output/ that may hold EGO NetCDFs, in the
+# order they should be searched. L1-timeseries is listed first because
+# step23.py writes full EGO 1.5 there (8 parameters with complete
+# value/_QC/_ADJUSTED/_ADJUSTED_QC/_ADJUSTED_ERROR triplets), whereas
+# step_ego.py's L1 conversion in EGO-timeseries/ currently emits N_PARAM=0
+# with no measurement variables at all.
+EGO_SEARCH_SUBDIRS = ("output/L1-timeseries", "output/EGO-timeseries",
+                      "L1-timeseries", "EGO-timeseries")
+
+
+def _describe_ego_file(path):
     """
-    Locate the EGO L0 and L1 NetCDF in a directory.
+    Inspect a candidate NetCDF and report what it can actually contribute.
 
-    Classification is by the data the file actually carries, not by filename:
-    an L1 has QC flags with at least one non-zero verdict and *_ADJUSTED
-    variables, an L0 does not. Filenames in this pipeline have varied
-    (`_L1_EGO.nc`, `_2024_EGO.nc`), so name-sniffing alone silently picked up a
-    stale file from an earlier run once already.
-
-    When several files classify the same way the most recently modified one
-    wins and the others are reported, so a leftover never quietly becomes the
-    source of truth.
+    Returns None when the file is not usable as an EGO source. "Usable"
+    requires at least one C-EGO measurement variable to be present. That guard
+    is the important part: a file carrying only metadata loads 160k observation
+    rows with zero measurements and reports success, which is exactly what
+    happened with EGO-timeseries/*_L1_EGO.nc.
     """
     import netCDF4
 
+    try:
+        nc = netCDF4.Dataset(path)
+    except OSError:
+        return None
+    try:
+        nc.set_auto_mask(False)
+        varnames = set(nc.variables)
+        if "TIME" not in varnames:
+            return None                      # not EGO (e.g. IOOS lowercase L0)
+
+        core_present = [p for p in CORE_PARAMS if p in varnames]
+        if not core_present:
+            return None                      # metadata-only shell
+
+        n_param = len(nc.dimensions["N_PARAM"]) if "N_PARAM" in nc.dimensions else 0
+        return {
+            "path": path,
+            "n_time": len(nc.dimensions["TIME"]) if "TIME" in nc.dimensions else 0,
+            "n_param": n_param,
+            "core": core_present,
+            "has_adjusted": any(v.endswith("_ADJUSTED") for v in varnames),
+            "has_qc": any(v.endswith("_QC") and v[:-3] in CORE_PARAMS
+                          for v in varnames),
+        }
+    finally:
+        nc.close()
+
+
+def find_ego_files(ego_dir: str, verbose: bool = True) -> dict:
+    """
+    Locate the EGO L0 and L1 NetCDF for a deployment.
+
+    `ego_dir` may be either a directory containing EGO NetCDFs directly, or a
+    deployment root, in which case EGO_SEARCH_SUBDIRS are searched too. That
+    matters because the L0 and L1 EGO products live in different directories:
+    L1 in output/L1-timeseries/, L0 in output/EGO-timeseries/.
+
+    Classification is by content, not filename: a file with *_ADJUSTED
+    variables is L1, one without is L0. Filenames here have varied
+    (`_L1_EGO.nc`, `_2024_EGO.nc`, `_L1.nc`), so name-sniffing alone has
+    already picked up the wrong file once.
+
+    Files with no C-EGO measurement variables are rejected outright rather
+    than ranked, so a metadata-only shell can never become the source.
+    """
     ego_dir = os.path.abspath(ego_dir)
     result = {"ego_l0": None, "ego_l1": None}
     if not os.path.isdir(ego_dir):
         return result
 
-    l0_cands, l1_cands = [], []
-    for f in sorted(os.listdir(ego_dir)):
-        if not f.endswith(".nc"):
-            continue
-        path = os.path.join(ego_dir, f)
-        try:
-            nc = netCDF4.Dataset(path)
-            nc.set_auto_mask(False)
-            try:
-                has_adjusted = any(v.endswith("_ADJUSTED") for v in nc.variables)
-            finally:
-                nc.close()
-        except OSError:
-            continue
-        (l1_cands if has_adjusted else l0_cands).append(path)
+    search_dirs = [ego_dir]
+    for sub in EGO_SEARCH_SUBDIRS:
+        d = os.path.join(ego_dir, *sub.split("/"))
+        if os.path.isdir(d) and d not in search_dirs:
+            search_dirs.append(d)
 
+    l0_cands, l1_cands, rejected = [], [], []
+    seen = set()
+    for d in search_dirs:
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".nc"):
+                continue
+            path = os.path.join(d, f)
+            real = os.path.realpath(path)
+            if real in seen:
+                continue
+            seen.add(real)
+            info = _describe_ego_file(path)
+            if info is None:
+                rejected.append(path)
+                continue
+            (l1_cands if info["has_adjusted"] else l0_cands).append(info)
+
+    if rejected and verbose:
+        for p in rejected:
+            print(f"  SKIP: {os.path.basename(p)} carries no C-EGO "
+                  f"measurement variables")
+
+    # Prefer the file declaring the most parameters, then the most timestamps,
+    # then the newest. Parameter count first because that is what determines
+    # how much of the deployment actually lands in the database.
     for key, cands in (("ego_l1", l1_cands), ("ego_l0", l0_cands)):
         if not cands:
             continue
-        cands.sort(key=os.path.getmtime, reverse=True)
-        result[key] = cands[0]
-        if len(cands) > 1 and verbose:
-            print(f"  NOTE: {len(cands)} candidate {key} files in {ego_dir}; "
-                  f"using the newest ({os.path.basename(cands[0])}). "
-                  f"Ignored: {', '.join(os.path.basename(c) for c in cands[1:])}")
+        cands.sort(key=lambda i: (i["n_param"], i["n_time"],
+                                  os.path.getmtime(i["path"])), reverse=True)
+        result[key] = cands[0]["path"]
+        if verbose:
+            best = cands[0]
+            print(f"  {key}: {os.path.basename(best['path'])} "
+                  f"(N_PARAM={best['n_param']}, TIME={best['n_time']:,}, "
+                  f"core={','.join(best['core'])})")
+            for other in cands[1:]:
+                print(f"    ignored {os.path.basename(other['path'])} "
+                      f"(N_PARAM={other['n_param']}, "
+                      f"TIME={other['n_time']:,})")
     return result
 
 
@@ -180,7 +281,7 @@ def _safe_param(param: str) -> bool:
 def _create_wide_table(conn, table: str, params: list[str]) -> None:
     """CREATE TABLE <table> with one named column set per parameter."""
     cols = [
-        "observation_id   INTEGER PRIMARY KEY "
+        "observation_id   TEXT PRIMARY KEY "
         "REFERENCES observation(observation_id) ON DELETE CASCADE"
     ]
     for p in params:

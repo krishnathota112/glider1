@@ -1,0 +1,19 @@
+
+===== SHEET: Feuil1  (17x17) =====
+parameter name	long_name	cf_standard_name	cf_standard_name_uri	unit	valid_min	valid_max	core/bio/intermediate core/intermediate bio	sdn_parameter_urn	sdn_parameter_uri	sdn_uom_urn	sdn_uom_uri	comment	update date	status	Fillvalue	Data Type
+BBP412	Particle backscattering at 412 nanometers			m-1	-	-	b									
+BBP650	Particle backscattering at 650 nanometers	-		m-1	-	-	b	SDN:P01::BB117R02	http://vocab.nerc.ac.uk/collection/P01/current/BB117R02/	SDN:P061::PMSR	http://vocab.nerc.ac.uk/collection/P06/current/PMSR/		2021-09-06 00:00:00		99999.f	float
+BBP660	Particle backscattering at 660 nanometers			m-1	-	-	b									
+BBP715	Particle backscattering at 715 nanometers			m-1	-	-	b									
+BBP880	Particle backscattering at 880 nanometers	-		m-1	-	-	b			SDN:P061::PMSR	http://vocab.nerc.ac.uk/collection/P06/current/PMSR/		2021-09-06 00:00:00		99999.f	float
+FLUORESCENCE_VOLTAGE_CHLA	Chlorophyll-A signal from analogic fluorescence sensor				-	-	ib									
+FLUORESCENCE_URANINE	Uranine signal from fluorescence sensor			count	-	-	ib									
+URANINE	Uranine			ppb	-	-	b	SDN:P01::URFLMCAL	https://vocab.nerc.ac.uk/collection/P01/current/URFLMCAL/	SND::P061::UGPL	http://vocab.nerc.ac.uk/collection/P06/current/UGPL/		2023-06-23 00:00:00			
+FLUORESCENCE_RHODAMINE	Rhodamine signal from fluorescence sensor			count	-	-	ib									
+RHODAMINE	Rhodamine			ppb	-	-	b	SDN:P01::RHFLMCAL	http://vocab.nerc.ac.uk/collection/P01/current/RHFLMCAL/	SND::P061::UGPL	http://vocab.nerc.ac.uk/collection/P06/current/UGPL/		2023-06-23 00:00:00			
+FLUORESCENCE_PE	Phycoerythrin signal from fluorescence sensor			count	-	-	ib									
+PE	Phycoerythrin				-	-	b									
+BETA_BACKSCATTERING660				count	-	-	ib									
+BETA_BACKSCATTERING700_SCALED	Total angle specific volume from backscattering sensor at 700 nanometers with factory calibration			m-1 sr-1	-	-	ib									
+BETA_BACKSCATTERING470_SCALED					-	-										
+BETA_BACKSCATTERING880	Total angle specific volume from backscattering sensor at 880 nanometers			count	-	-	ib	SDN:P01::NVLTOBS1		SDN:P061::UUUU			2023-06-26 00:00:00			

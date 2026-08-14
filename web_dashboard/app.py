@@ -2,7 +2,9 @@ import os
 import re
 import sys
 import glob
+import threading
 import subprocess
+from datetime import datetime
 from flask import Flask, jsonify, render_template, send_from_directory, abort, request
 
 app = Flask(__name__, template_folder='templates')
@@ -30,6 +32,13 @@ app.register_blueprint(ego_api)
 #   GLIDER_PYTHON        interpreter to run it with (default: this one)
 # ------------------------------------------------------------------
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Needed for `from db.load_deployment import ...`. ego_api happens to insert
+# this too, so this was working by accident; make it explicit rather than
+# depending on another module's import side effect.
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 
 def _default_raw_data_dir() -> str:
     """
@@ -62,6 +71,113 @@ PYTHON = os.environ.get("GLIDER_PYTHON", sys.executable)
 # Active processes tracker: glider_id -> { "process": Popen, "status": str,
 #                                          "log_path": str, "log_file": handle }
 active_processes = {}
+
+# Ingestion runs in a worker thread rather than a subprocess: db.load_deployment
+# is an importable function, and running it in-process means the status dict
+# below carries the real per-deployment result instead of scraped stdout.
+# One lock, because every ingest appends to the same SQLite file.
+_ingest_lock = threading.Lock()
+ingest_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "current": None,
+    "queue": [],
+    "done": [],       # [{glider_id, rows, core_params, bgc_params, elapsed_s}]
+    "errors": [],     # [{deployment, error}]
+    "log": [],
+}
+
+
+def _ingest_log(msg):
+    ingest_state["log"].append(
+        f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
+    # Keep the tail bounded; the UI only ever renders the recent lines.
+    if len(ingest_state["log"]) > 500:
+        del ingest_state["log"][:-500]
+
+
+def ingestible_deployments():
+    """
+    Deployment folders that hold a usable EGO product.
+
+    Delegates the "is this file usable" judgement to db.load_deployment's own
+    discovery, so the dashboard cannot disagree with the loader about which
+    files count.
+    """
+    from db.load_deployment import find_ego_files
+
+    out = []
+    if not os.path.isdir(RAW_DATA_DIR):
+        return out
+    for name in sorted(os.listdir(RAW_DATA_DIR)):
+        if not os.path.isdir(os.path.join(RAW_DATA_DIR, name)):
+            continue
+        root = deployment_root(name)
+        found = find_ego_files(root, verbose=False)
+        if found.get("ego_l1") or found.get("ego_l0"):
+            out.append({
+                "folder_name": name,
+                "root": root,
+                "ego_l1": found.get("ego_l1"),
+                "ego_l0": found.get("ego_l0"),
+            })
+    return out
+
+
+def _run_ingest(targets):
+    """Worker: load each deployment into the shared database, in sequence."""
+    from db.load_deployment import load_deployment
+
+    db = db_path()
+    ingest_state.update(running=True, started_at=datetime.now().isoformat(),
+                        finished_at=None, current=None,
+                        queue=[t["folder_name"] for t in targets],
+                        done=[], errors=[], log=[])
+    _ingest_log(f"database: {db}")
+    _ingest_log(f"{len(targets)} deployment(s) queued")
+
+    try:
+        for t in targets:
+            name = t["folder_name"]
+            ingest_state["current"] = name
+            if name in ingest_state["queue"]:
+                ingest_state["queue"].remove(name)
+            _ingest_log(f"ingesting {name} ...")
+            try:
+                # Appends: meta is keyed on glider_id and every write is
+                # ON CONFLICT DO UPDATE, so re-ingesting a deployment refreshes
+                # its rows instead of duplicating them.
+                res = load_deployment(
+                    ego_l1_path=t.get("ego_l1"),
+                    ego_l0_path=t.get("ego_l0"),
+                    db_path=db,
+                    verbose=False,
+                )
+                ingest_state["done"].append({
+                    "folder_name": name,
+                    "glider_id": res["glider_id"],
+                    "rows": res["rows"],
+                    "core_params": res["core_params"],
+                    "bgc_params": res["bgc_params"],
+                    "elapsed_s": round(res["elapsed_s"], 1),
+                })
+                _ingest_log(
+                    f"  {name} -> glider {res['glider_id']}: "
+                    f"{res['rows']['observation']:,} observations, "
+                    f"core={','.join(res['core_params'])}, "
+                    f"bgc={','.join(res['bgc_params'])} "
+                    f"({res['elapsed_s']:.1f}s)")
+            except Exception as exc:
+                ingest_state["errors"].append(
+                    {"deployment": name, "error": f"{type(exc).__name__}: {exc}"})
+                _ingest_log(f"  ERROR {name}: {type(exc).__name__}: {exc}")
+        _ingest_log(f"complete: {len(ingest_state['done'])} ok, "
+                    f"{len(ingest_state['errors'])} failed")
+    finally:
+        ingest_state["current"] = None
+        ingest_state["running"] = False
+        ingest_state["finished_at"] = datetime.now().isoformat()
 
 def parse_summary_report(file_path):
     if not os.path.exists(file_path):
@@ -343,6 +459,163 @@ def process_status(glider_id):
         "progress": progress,
         "log": log_content
     })
+
+# ── Ingestion ───────────────────────────────────────────────────────
+#
+# Every ingest appends into ONE database (GLIDER_DB, default
+# <repo>/glider_rtqc.db). meta is keyed on glider_id and all writes are
+# ON CONFLICT DO UPDATE, so re-running a deployment refreshes its rows rather
+# than duplicating them, and loading a new deployment leaves the others alone.
+
+@app.route('/api/ingest/candidates')
+def ingest_candidates():
+    """Deployments that have a usable EGO product, and whether each is loaded."""
+    import sqlite3
+
+    cands = ingestible_deployments()
+
+    loaded = {}
+    db = db_path()
+    if os.path.exists(db):
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                loaded = {r[0]: {"n_observations": r[1], "processed_at": r[2]}
+                          for r in conn.execute(
+                              "SELECT glider_id, n_observations, processed_at "
+                              "FROM meta")}
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+
+    for c in cands:
+        # The loader takes glider_id from the EGO platform_code attribute; the
+        # folder name is only a fallback, so match on both.
+        gid = next((g for g in loaded
+                    if g == c["folder_name"] or g in c["folder_name"]), None)
+        c["glider_id"] = gid
+        c["ingested"] = bool(gid)
+        c["ingested_info"] = loaded.get(gid) if gid else None
+        c["has_l1"] = bool(c.get("ego_l1"))
+        c["has_l0"] = bool(c.get("ego_l0"))
+        c["ego_l1"] = os.path.basename(c["ego_l1"]) if c.get("ego_l1") else None
+        c["ego_l0"] = os.path.basename(c["ego_l0"]) if c.get("ego_l0") else None
+
+    return jsonify({
+        "database": db,
+        "database_exists": os.path.exists(db),
+        "n_loaded": len(loaded),
+        "candidates": cands,
+    })
+
+
+@app.route('/api/ingest', methods=['POST'])
+def ingest_start():
+    """
+    Start ingestion.
+
+    Body: {"deployments": ["1126", ...]}  or  {"all": true}
+    """
+    if ingest_state["running"]:
+        return jsonify({"error": "an ingestion is already running",
+                        "current": ingest_state["current"]}), 409
+
+    body = request.get_json(silent=True) or {}
+    available = ingestible_deployments()
+
+    if body.get("all"):
+        targets = available
+    else:
+        wanted = body.get("deployments") or []
+        if not wanted:
+            return jsonify({"error": "provide 'deployments': [...] or 'all': true"}), 400
+        names = {os.path.basename(w) for w in wanted}
+        targets = [a for a in available if a["folder_name"] in names]
+        missing = names - {t["folder_name"] for t in targets}
+        if missing:
+            return jsonify({
+                "error": "no usable EGO product for: " + ", ".join(sorted(missing)),
+                "hint": "run the pipeline for these deployments first",
+            }), 404
+
+    if not targets:
+        return jsonify({"error": "nothing to ingest",
+                        "hint": "no deployment has a usable EGO product yet"}), 404
+
+    # Guard the lock rather than the flag: two POSTs arriving together could
+    # both pass the check above before either sets running=True.
+    if not _ingest_lock.acquire(blocking=False):
+        return jsonify({"error": "an ingestion is already running"}), 409
+
+    def _worker():
+        try:
+            _run_ingest(targets)
+        finally:
+            _ingest_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return jsonify({
+        "status": "started",
+        "database": db_path(),
+        "deployments": [t["folder_name"] for t in targets],
+    })
+
+
+@app.route('/api/ingest/status')
+def ingest_status():
+    st = {k: v for k, v in ingest_state.items()}
+    st["log"] = "\n".join(ingest_state["log"])
+    total = len(st["done"]) + len(st["errors"]) + len(st["queue"]) \
+        + (1 if st["current"] else 0)
+    st["progress"] = (
+        100 if (not st["running"] and total and not st["queue"])
+        else int(100 * len(st["done"]) / total) if total else 0
+    )
+    st["database"] = db_path()
+    return jsonify(st)
+
+
+@app.route('/api/db/summary')
+def db_summary():
+    """Compact rollup of the combined database, for the dashboard header."""
+    import sqlite3
+
+    db = db_path()
+    if not os.path.exists(db):
+        return jsonify({"exists": False, "database": db})
+
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        deps = [dict(r) for r in conn.execute(
+            "SELECT glider_id, deployment_start, deployment_end, n_profiles,"
+            "       n_observations, n_gps_fixes, distance_over_ground_km,"
+            "       max_depth_dbar, ego_format_version, processed_at"
+            "  FROM meta ORDER BY deployment_start")]
+        n_obs = conn.execute("SELECT COUNT(*) FROM observation").fetchone()[0]
+        core_cols = [r[1] for r in conn.execute("PRAGMA table_info(core)")
+                     if r[1] != "observation_id"
+                     and not r[1].endswith(("_QC", "_ADJUSTED",
+                                            "_ADJUSTED_QC"))]
+        bgc_cols = [r[1] for r in conn.execute("PRAGMA table_info(bgc)")
+                    if r[1] != "observation_id"
+                    and not r[1].endswith(("_QC", "_ADJUSTED",
+                                           "_ADJUSTED_QC"))]
+        return jsonify({
+            "exists": True,
+            "database": db,
+            "size_mb": round(os.path.getsize(db) / (1024 * 1024), 1),
+            "n_deployments": len(deps),
+            "n_observations": n_obs,
+            "core_params": core_cols,
+            "bgc_params": bgc_cols,
+            "deployments": deps,
+        })
+    finally:
+        conn.close()
+
 
 if __name__ == '__main__':
     # debug=True enables the Werkzeug interactive debugger, which is remote
