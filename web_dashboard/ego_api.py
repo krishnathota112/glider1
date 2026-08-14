@@ -50,15 +50,25 @@ QC_LABELS = {
 
 def db_path() -> str:
     """
-    Database location, overridable with GLIDER_DB.
+    Location of the combined database, overridable with GLIDER_DB.
 
-    Default matches db/load_deployment.py's default (`glider_rtqc.db`). These
-    were previously different files — the loader wrote glider_rtqc.db while
-    this blueprint looked for glider_ego.db — so every /api/db endpoint
-    reported "database not found" no matter how many deployments were loaded.
+    Defaults to <Raw_Data>/glider_rtqc.db — beside the deployment folders, not
+    inside the repo. The combined database is data, not code, so it belongs
+    with the data; keeping it in the checkout meant it was invisible to anyone
+    looking at Raw_Data and at risk from a clean clone.
+
+    Falls back to the repo root only when GLIDER_RAW_DATA_DIR is unset, so a
+    bare `python web_dashboard/app.py` still finds something.
     """
-    return os.path.abspath(os.environ.get(
-        "GLIDER_DB", os.path.join(_REPO_ROOT, "glider_rtqc.db")))
+    explicit = os.environ.get("GLIDER_DB")
+    if explicit:
+        return os.path.abspath(explicit)
+
+    raw = os.environ.get("GLIDER_RAW_DATA_DIR")
+    if raw and os.path.isdir(raw):
+        return os.path.abspath(os.path.join(raw, "glider_rtqc.db"))
+
+    return os.path.abspath(os.path.join(_REPO_ROOT, "glider_rtqc.db"))
 
 
 def _connect() -> sqlite3.Connection | None:

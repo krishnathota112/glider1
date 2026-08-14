@@ -83,7 +83,11 @@ if [[ ! -d "$RAW_DATA_DIR" ]]; then
 fi
 RAW_DATA_DIR="$(cd "$RAW_DATA_DIR" && pwd)"
 
-[[ -z "$DB" ]] && DB="$REPO_ROOT/glider_rtqc.db"
+# The combined database lives beside the deployment folders, in Raw_Data. It is
+# data rather than code, so it does not belong in the checkout: keeping it there
+# made it invisible to anyone inspecting Raw_Data and put it at risk from a
+# fresh clone. Per-deployment databases stay inside each deployment's output/.
+[[ -z "$DB" ]] && DB="$RAW_DATA_DIR/glider_rtqc.db"
 mkdir -p "$(dirname "$DB")"
 
 # ── Interpreter ─────────────────────────────────────────────────────

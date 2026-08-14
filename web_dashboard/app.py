@@ -38,6 +38,13 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # depending on another module's import side effect.
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+# pipeline/ holds layout.py, the single definition of the output directory
+# structure. Importing it here keeps the dashboard from restating the layout.
+_PIPELINE_DIR = os.path.join(_REPO_ROOT, "pipeline")
+if _PIPELINE_DIR not in sys.path:
+    sys.path.insert(0, _PIPELINE_DIR)
+
+import layout as _layout  # noqa: E402
 
 
 def _default_raw_data_dir() -> str:
@@ -292,8 +299,8 @@ def get_transects():
             continue
         folder_path = deployment_root(name)
             
-        plots_dir = os.path.join(folder_path, 'output', 'plots')
-        reports_dir = os.path.join(folder_path, 'output', 'reports')
+        plots_dir = _layout.plots_dir(os.path.join(folder_path, 'output'))
+        reports_dir = _layout.reports_dir(os.path.join(folder_path, 'output'))
         
         # Check if processed
         is_processed = False
@@ -321,15 +328,29 @@ def get_transects():
             status = active_processes[name]["status"]
             
         # EGO products, so the UI can link the deployment to its EGO files and
-        # to its row in the database.
-        ego_dir = os.path.join(folder_path, 'output', 'EGO-timeseries')
-        ego_files = (sorted(f for f in os.listdir(ego_dir) if f.endswith('.nc'))
-                     if os.path.isdir(ego_dir) else [])
+        # to its row in the database. Paths come from pipeline/layout.py, which
+        # searches the current output/L{0,1}/L{0,1}_timeseries/ layout and the
+        # legacy flat directories, so deployments processed before the layout
+        # change still list their files.
+        out_dir = os.path.join(folder_path, 'output')
+        ego_files = sorted({
+            os.path.basename(p)
+            for lvl in ('L0', 'L1')
+            for p in _layout.find_timeseries(out_dir, lvl)
+        })
+
+        # Per-deployment database, written into this deployment's own output/.
+        dep_db = _layout.deployment_db(out_dir, name)
 
         transects.append({
             'folder_name': name,
             'status': status,
             'metadata': summary_data,
+            'deployment_db': dep_db if os.path.exists(dep_db) else None,
+            'deployment_db_mb': (round(os.path.getsize(dep_db) / (1024 * 1024), 1)
+                                 if os.path.exists(dep_db) else None),
+            'legacy_dirs': [os.path.basename(p)
+                            for p in _layout.legacy_dirs_present(out_dir)],
             'plots': sorted(plot_files),
             'ego_files': ego_files,
             'has_ego': bool(ego_files),
@@ -341,7 +362,8 @@ def get_transects():
 @app.route('/plots/<transect>/<filename>')
 def serve_plot(transect, filename):
     safe_filename = os.path.basename(filename)
-    plots_dir = os.path.join(deployment_root(transect), 'output', 'plots')
+    plots_dir = _layout.plots_dir(
+        os.path.join(deployment_root(transect), 'output'))
     if not os.path.exists(os.path.join(plots_dir, safe_filename)):
         abort(404)
     return send_from_directory(plots_dir, safe_filename)
@@ -405,8 +427,8 @@ def process_status(glider_id):
     
     if safe_glider_id not in active_processes:
         # Check if already processed (plots exist)
-        plots_dir = os.path.join(deployment_root(safe_glider_id),
-                                 'output', 'plots')
+        plots_dir = _layout.plots_dir(
+            os.path.join(deployment_root(safe_glider_id), 'output'))
         if os.path.exists(plots_dir) and any(f.endswith('.png') for f in os.listdir(plots_dir)):
             return jsonify({"status": "processed", "progress": 100, "log": "Already processed."})
         return jsonify({"status": "unprocessed", "progress": 0, "log": "Idle."})

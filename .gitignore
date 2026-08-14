@@ -37,3 +37,8 @@ web_dashboard/logs/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Compiled bytecode: regenerated on every run, and it collided with every git pull.
+__pycache__/
+*.pyc
+_run.log

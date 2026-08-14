@@ -541,7 +541,11 @@ def plot_l0(l0_path, plot_path=None, l0_grid_path=None):
 
     # Try to use pre-built L0 grid (from step4/step1c) — much more reliable
     if l0_grid_path is None:
+        import layout
         candidates = [
+            os.path.join(d, f"incois_glider_{GLIDER_ID}_L0_grid.nc")
+            for d in layout.search_dirs(OUTPUT_DIR, "L0", "gridfiles")
+        ] + [
             os.path.join(OUTPUT_DIR, "L0-gridfiles",
                          f"incois_glider_{GLIDER_ID}_L0_grid.nc"),
             os.path.join(OUTPUT_DIR, "gridfiles",
@@ -694,8 +698,13 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
     # Try to find the grid file (multiple naming conventions)
     if grid_path is None or not os.path.exists(grid_path):
         # Search common grid file patterns
+        import layout
         candidates = [
             grid_path,
+        ] + [
+            os.path.join(d, f"incois_glider_{GLIDER_ID}_L1_grid.nc")
+            for d in layout.search_dirs(OUTPUT_DIR, "L1", "gridfiles")
+        ] + [
             os.path.join(OUTPUT_DIR, "L1-gridfiles",
                          f"incois_glider_{GLIDER_ID}_L1_grid.nc"),
             os.path.join(OUTPUT_DIR, "gridfiles",
@@ -948,11 +957,24 @@ def plot_individual_variables(l0_path, l1_path=None):
         ("backscatter_700",   "backscatter_700","inferno",   "m⁻¹",    200),
     ]
 
-    # Paths to pre-built grid files
-    l0_grid_path = os.path.join(OUTPUT_DIR, "L0-gridfiles",
-                                f"incois_glider_{GLIDER_ID}_L0_grid.nc")
-    l1_grid_path = os.path.join(OUTPUT_DIR, "L1-gridfiles",
-                                f"incois_glider_{GLIDER_ID}_L1_grid.nc")
+    # Paths to pre-built grid files. Resolved through layout so a deployment
+    # produced under either the current or the previous directory layout is
+    # found without the caller knowing which.
+    import layout
+
+    def _grid(level):
+        name = f"incois_glider_{GLIDER_ID}_{level}_grid.nc"
+        for d in layout.search_dirs(OUTPUT_DIR, level, "gridfiles"):
+            p = os.path.join(d, name)
+            if os.path.exists(p):
+                return p
+        # Fall back to the current-layout path so the error message names the
+        # place the file is expected rather than an arbitrary legacy one.
+        return os.path.join(layout.product_dir(OUTPUT_DIR, level, "gridfiles"),
+                            name)
+
+    l0_grid_path = _grid("L0")
+    l1_grid_path = _grid("L1")
 
     sources = []
     if l0_path and os.path.exists(l0_path):

@@ -318,24 +318,53 @@ def _load_deployment_meta(deploy_yaml: str) -> dict:
 
 def _get_gps_fixes(l0_ds: xr.Dataset):
     """
-    Extract actual GPS surface fixes from L0 (positions where the glider
-    was at the surface, not interpolated subsurface positions).
+    Extract actual GPS surface fixes (surface positions, not interpolated
+    subsurface ones). Returns (times, lats, lons) as numpy arrays.
 
-    Strategy: GPS fixes are identified as points where profile_direction
-    changes (surface events between dives/climbs) or where the glider
-    has near-zero depth. Returns (times, lats, lons) as numpy arrays.
+    An EGO-shaped source already carries a proper TIME_GPS/LATITUDE_GPS/
+    LONGITUDE_GPS triplet on its own dimension, so use that verbatim rather
+    than re-deriving it. Re-derivation on such a source used to find nothing
+    (it looks for lowercase 'latitude'/'profile_index') and the published file
+    ended up with TIME_GPS=1 and POSITIONING_METHOD claiming every sample was
+    interpolated.
+
+    Otherwise fall back to deriving fixes from an L0-shaped source, where the
+    glider surfaces between profiles to get a fix.
     """
-    if "latitude" not in l0_ds or "longitude" not in l0_ds:
+    if ("TIME_GPS" in l0_ds and "LATITUDE_GPS" in l0_ds
+            and "LONGITUDE_GPS" in l0_ds):
+        gt = l0_ds["TIME_GPS"].values
+        glat = np.asarray(l0_ds["LATITUDE_GPS"].values, dtype=np.float64)
+        glon = np.asarray(l0_ds["LONGITUDE_GPS"].values, dtype=np.float64)
+        # EGO fill for position is 99999; drop those along with NaN.
+        valid = (np.isfinite(glat) & np.isfinite(glon)
+                 & (np.abs(glat) <= 90.0) & (np.abs(glon) <= 180.0))
+        if valid.any():
+            if np.issubdtype(np.asarray(gt).dtype, np.datetime64):
+                gts = np.asarray(gt)[valid].astype("datetime64[s]")
+            else:
+                gsec = np.asarray(gt, dtype=np.float64)[valid]
+                gts = gsec.astype("datetime64[s]")
+            print(f"  GPS fixes: {int(valid.sum())} taken from the source's "
+                  f"existing TIME_GPS arrays")
+            return gts, glat[valid], glon[valid]
+
+    lat_name = _resolve(l0_ds, "latitude", "LATITUDE")
+    lon_name = _resolve(l0_ds, "longitude", "LONGITUDE")
+    t_name = _resolve(l0_ds, "time", "TIME")
+    if not (lat_name and lon_name and t_name):
         return np.array([]), np.array([]), np.array([])
 
-    lat = l0_ds["latitude"].values
-    lon = l0_ds["longitude"].values
-    t   = l0_ds["time"].values.astype("datetime64[s]").astype(float)
+    lat = l0_ds[lat_name].values
+    lon = l0_ds[lon_name].values
+    t   = l0_ds[t_name].values.astype("datetime64[s]").astype(float)
 
     # Use profile boundaries as GPS fix proxies — the glider surfaces
     # between each profile to get a GPS fix
-    if "profile_index" in l0_ds:
-        pi = l0_ds["profile_index"].values
+    pi_name = _resolve(l0_ds, "profile_index", "PHASE_NUMBER")
+    if pi_name:
+        pi = np.asarray(l0_ds[pi_name].values, dtype=np.float64)
+        pi = np.where(pi >= 99999, np.nan, pi)   # EGO int fill
         unique_profiles = np.unique(pi[np.isfinite(pi)])
         fix_t, fix_lat, fix_lon = [], [], []
         for p in unique_profiles:
@@ -374,7 +403,13 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
     institution   = str(meta.get("institution", "INCOIS"))
     deployment_name = str(meta.get("deployment_name", platform_code))
 
-    t_raw = src_ds["time"].values  # datetime64
+    # Accept either source naming: 'time' (L0/IOOS) or 'TIME' (already EGO).
+    _t_name = _resolve(src_ds, "time", "TIME")
+    if _t_name is None:
+        raise ValueError(
+            f"source has no time axis: looked for 'time' and 'TIME', found "
+            f"{', '.join(sorted(set(src_ds.variables)) [:15])}")
+    t_raw = src_ds[_t_name].values  # datetime64
     n = len(t_raw)
     # Convert to seconds since 1970-01-01 (EGO TIME units)
     t_sec = t_raw.astype("datetime64[s]").astype(np.float64)
@@ -417,8 +452,14 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
         ("longitude", "LONGITUDE", "Measurement longitude", "longitude",
          "SDN:P01::ALONZZ01", "SDN:P06::DEGE", "POSITION_QC"),
     ]:
-        if internal in src_ds:
-            v = src_ds[internal].values.astype(np.float64)
+        # Resolve under either naming. Without the ego_name fallback an
+        # already-EGO source yielded an all-fill position array, which then
+        # propagated to geospatial_lat_min/max as NaN in the global attributes.
+        _src = _resolve(src_ds, internal, ego_name)
+        if _src:
+            v = src_ds[_src].values.astype(np.float64)
+            # An EGO source already uses 99999 as its position fill; treat that
+            # as missing rather than carrying it into valid_min/valid_max maths.
             v[~np.isfinite(v)] = 99999.0
         else:
             v = np.full(n, 99999.0)
@@ -439,12 +480,15 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
             "coordinate_reference_frame": "urn:ogc:crs:EPSG::4326",
             "sdn_parameter_urn": sdn_p,
             "sdn_uom_urn": sdn_u,
-            "glider_original_parameter_name": internal,
+            "glider_original_parameter_name": _src or internal,
         })
 
     pos_qc = np.ones(n, dtype=np.int8)   # flag 1 = good
-    if is_l1 and "latitude_QC" in src_ds:
-        pos_qc = src_ds["latitude_QC"].values.astype(np.int8)
+    # An EGO source carries POSITION_QC directly; an L0-shaped one would have
+    # latitude_QC. Prefer whichever exists over asserting flag 1.
+    _pq = _resolve(src_ds, "latitude_QC", "POSITION_QC")
+    if is_l1 and _pq:
+        pos_qc = src_ds[_pq].values.astype(np.int8)
     data_vars["POSITION_QC"] = xr.DataArray(pos_qc, dims=["TIME"], attrs=dict(_QC_ATTRS))
 
     # ── GPS fix arrays (TIME_GPS dimension) ──────────────────────────────────
@@ -506,10 +550,27 @@ def _build_ego_dataset(src_ds: xr.Dataset, deploy_meta: dict,
 
 
 def _add_phase_vars(src_ds, data_vars, n):
-    """Add PHASE and PHASE_NUMBER from profile_direction."""
+    """
+    Add PHASE and PHASE_NUMBER.
+
+    From an already-EGO source, PHASE is copied through unchanged. It must NOT
+    be re-derived by sign: profile_direction is a signed direction, but PHASE is
+    a reference-table-9.2 CODE, and 1 (descent) and 4 (ascent) are both
+    positive. Feeding PHASE into the `pd > 0 -> descent` rule below would
+    relabel every ascent as a descent.
+
+    From an L0-shaped source, derive it from profile_direction as before.
+    """
     # EGO phase codes: 0=surface_drift 1=descent 2=subsurface_drift
     #                  3=inflexion 4=ascent 5=grounded 6=inconsistent
-    if "profile_direction" in src_ds:
+    if "PHASE" in src_ds:
+        ph_raw = np.asarray(src_ds["PHASE"].values, dtype=np.float64)
+        phase = np.full(n, np.int8(-128), dtype=np.int8)
+        ok = np.isfinite(ph_raw) & (ph_raw >= 0) & (ph_raw <= 6)
+        phase[ok] = ph_raw[ok].astype(np.int8)
+        print(f"  PHASE: copied through from source "
+              f"({int(ok.sum())}/{n} classified)")
+    elif "profile_direction" in src_ds:
         pd = src_ds["profile_direction"].values
         phase = np.full(n, np.int8(6), dtype=np.int8)   # default: inconsistent
         phase[pd > 0]  = np.int8(1)   # descent
@@ -527,8 +588,12 @@ def _add_phase_vars(src_ds, data_vars, n):
         "flag_meanings": "surface_drift descent subsurface_drift inflexion ascent grounded inconsistent",
     })
 
-    if "profile_index" in src_ds:
-        pi_raw = np.asarray(src_ds["profile_index"].values, dtype=np.float64)
+    _pi = _resolve(src_ds, "profile_index", "PHASE_NUMBER")
+    if _pi:
+        pi_raw = np.asarray(src_ds[_pi].values, dtype=np.float64)
+        # An EGO source already encodes "no profile" as the 99999 fill; keep it
+        # as missing rather than treating 99999 as a real profile number.
+        pi_raw = np.where(pi_raw >= 99999, np.nan, pi_raw)
         finite = np.isfinite(pi_raw)
         n_nan_pi = int((~finite).sum())
         # NaN -> int32 is undefined behaviour in numpy: it yields INT32_MIN
@@ -1027,9 +1092,16 @@ def _add_deployment_vars(deploy_meta, data_vars, src_ds):
     """
     meta = deploy_meta.get("metadata", {})
 
-    t = src_ds["time"].values
-    lat = src_ds["latitude"].values if "latitude" in src_ds else np.array([np.nan])
-    lon = src_ds["longitude"].values if "longitude" in src_ds else np.array([np.nan])
+    # Accept either naming; see _resolve(). Position fill (99999) is mapped to
+    # NaN so the deployment start/end coordinates below are computed from real
+    # fixes only.
+    t = src_ds[_resolve(src_ds, "time", "TIME")].values
+    _la = _resolve(src_ds, "latitude", "LATITUDE")
+    _lo = _resolve(src_ds, "longitude", "LONGITUDE")
+    lat = (np.where(np.abs(src_ds[_la].values) > 90, np.nan,
+                    src_ds[_la].values) if _la else np.array([np.nan]))
+    lon = (np.where(np.abs(src_ds[_lo].values) > 180, np.nan,
+                    src_ds[_lo].values) if _lo else np.array([np.nan]))
 
     finite = np.isfinite(lat) & np.isfinite(lon)
     first = int(np.argmax(finite)) if finite.any() else 0
@@ -1126,6 +1198,23 @@ def _add_positioning_method(src_ds, data_vars, n, gps_time_sec, t_sec):
             "flag_meanings": "GPS Argos interpolated"})
 
 
+def _resolve(src_ds, *candidates):
+    """
+    Return the first candidate variable name present in src_ds, else None.
+
+    Needed because this converter is fed two differently-named sources:
+      - L0 from step1: lowercase IOOS names  (temperature, salinity, density)
+      - L1 from step23: already-EGO names    (TEMP, PSAL, DENSITY)
+    _VAR_MAP is keyed on the lowercase names, so before this existed every
+    lookup missed on an L1 source: written_params came back empty and the L1
+    EGO file was published with N_PARAM=0 and no measurement variables at all.
+    """
+    for name in candidates:
+        if name and name in src_ds:
+            return name
+    return None
+
+
 def _add_science_vars(src_ds, data_vars, is_l1, n):
     """
     Add all science variables (TEMP, PSAL, PRES, DOXY, CHLA, CDOM, BBP700).
@@ -1133,31 +1222,59 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
     For L0: writes VAR only (no QC, no adjusted).
     Applies density conversion for DOXY (umol/L -> micromole/kg).
     Returns list of EGO parameter names actually written.
+
+    Accepts either source naming convention; see _resolve().
     """
     fill = np.float32(99999.0)
 
-    # Pre-fetch density for DOXY conversion (umol/L -> micromole/kg)
+    # Pre-fetch density for DOXY conversion (umol/L -> micromole/kg).
+    # step23 renames this to DENSITY, so check both spellings.
     density = None
-    if "density" in src_ds:
-        density = src_ds["density"].values.astype(np.float64)
+    dens_name = _resolve(src_ds, "density", "DENSITY")
+    if dens_name:
+        density = src_ds[dens_name].values.astype(np.float64)
         d_valid = density[np.isfinite(density)]
-        print(f"  DEBUG density: n={len(d_valid)}, range={d_valid.min():.1f}-{d_valid.max():.1f} kg/m3")
+        if d_valid.size:
+            print(f"  density source '{dens_name}': n={len(d_valid)}, "
+                  f"range={d_valid.min():.1f}-{d_valid.max():.1f} kg/m3")
+        else:
+            print(f"  WARNING: density source '{dens_name}' is entirely NaN")
+            density = None
 
     written_params = []
 
     for internal, info in _VAR_MAP.items():
-        if internal not in src_ds:
-            continue
-
         ego      = info["ego"]
         units    = info["units"]
         level    = info["level"]
         adj_src  = info.get("adjusted_src")
         needs_dc = info.get("needs_density_conversion", False)
 
-        raw_vals = src_ds[internal].values.astype(np.float32).copy()
+        # Resolve the value variable under either naming convention. `ego` is
+        # tried second so an L1 source (TEMP) matches just as an L0 one
+        # (temperature) does.
+        src_name = _resolve(src_ds, internal, ego)
+        if src_name is None:
+            continue
 
-        # DOXY: convert umol/L -> micromole/kg using in-situ density
+        raw_vals = src_ds[src_name].values.astype(np.float32).copy()
+
+        # DOXY: convert umol/L -> micromole/kg using in-situ density.
+        #
+        # Only when the source is still in volumetric units. An L1 source has
+        # already been through this conversion (step23 writes DOXY in
+        # micromole/kg), so converting again would divide by density twice and
+        # under-report oxygen by ~2-3%. Decide from the source's own units
+        # attribute rather than from which name matched, because that is the
+        # thing that actually determines whether the division is owed.
+        src_units = str(src_ds[src_name].attrs.get("units", "")).strip()
+        already_converted = src_units.replace(" ", "").lower() in (
+            "micromole/kg", "umol/kg", "micromoleperkilogram", "mol kg-1".replace(" ", ""))
+        if needs_dc and already_converted:
+            print(f"  {ego}: source '{src_name}' already in {src_units!r} — "
+                  f"density conversion not re-applied")
+            needs_dc = False
+
         if needs_dc:
             if density is not None:
                 # density in kg/m3; 1 kg/m3 = 0.001 kg/L
@@ -1196,7 +1313,10 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
             "units":       units,
             "_FillValue":  fill,
             "coordinates": "TIME LATITUDE LONGITUDE PRES",
-            "glider_original_parameter_name": internal,
+            # Record the name actually read, not the map key: on an L1 source
+            # that is the EGO name, and claiming a lowercase original that was
+            # never in the file would be false provenance.
+            "glider_original_parameter_name": src_name,
         }
         # `is not None` rather than truthiness: an empty standard_name is a
         # deliberate, spec-required value for parameters with no CF name
@@ -1224,9 +1344,11 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
             continue   # L0: raw value only
 
         # ── QC flag ──────────────────────────────────────────────────────────
-        qc_internal = f"{internal}_QC"
-        if qc_internal in src_ds:
-            qc_vals = src_ds[qc_internal].values.astype(np.int8)
+        # An L1 source carries TEMP_QC; an L0-shaped one would carry
+        # temperature_QC. Check both.
+        qc_name = _resolve(src_ds, f"{internal}_QC", f"{ego}_QC")
+        if qc_name:
+            qc_vals = src_ds[qc_name].values.astype(np.int8)
         else:
             # Flag 0 ("no_qc_performed", EGO reference table 2.1) everywhere is
             # CORRECT for the parameters that land here, not an oversight:
@@ -1251,9 +1373,13 @@ def _add_science_vars(src_ds, data_vars, is_l1, n):
         adj_vals = np.full(n, fill, dtype=np.float32)
         adj_qc   = qc_vals.copy()
 
-        if adj_src and adj_src in src_ds:
-            adj_raw  = src_ds[adj_src].values.astype(np.float32).copy()
-            raw_src  = src_ds[internal].values
+        # The adjusted source is step23's working copy under the L0 naming
+        # (temperature_processed), or the already-written EGO variable under the
+        # L1 naming (TEMP_ADJUSTED).
+        adj_name = _resolve(src_ds, adj_src, f"{ego}_ADJUSTED")
+        if adj_name:
+            adj_raw  = src_ds[adj_name].values.astype(np.float32).copy()
+            raw_src  = src_ds[src_name].values
 
             # step23 builds the *_processed / *_corrected sources from the
             # pre-mask working copy, then writes the despike/range masks back
@@ -1350,7 +1476,7 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     deploy_meta = _load_deployment_meta(deploy_yaml) if deploy_yaml else {}
     meta        = deploy_meta.get("metadata", {})
 
-    n = len(src_ds["time"])
+    n = len(src_ds[_resolve(src_ds, "time", "TIME")])
     platform_code   = str(meta.get("glider_serial", meta.get("deployment_name", "unknown")))
     institution     = str(meta.get("institution", "INCOIS"))
     deployment_name = str(meta.get("deployment_name", platform_code))
@@ -1394,17 +1520,37 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
     ds_out = xr.Dataset(data_vars)
 
     # ── Mandatory global attributes ──────────────────────────────────────────
-    t_vals = src_ds["time"].values
+    t_vals = src_ds[_resolve(src_ds, "time", "TIME")].values
     t_start = str(t_vals[0])[:19] + "Z"
     t_end   = str(t_vals[-1])[:19] + "Z"
 
-    lat_vals = src_ds["latitude"].values if "latitude" in src_ds else np.array([np.nan])
-    lon_vals = src_ds["longitude"].values if "longitude" in src_ds else np.array([np.nan])
+    # Position fill (99999) must be excluded before nanmin/nanmax, or an EGO
+    # source reports geospatial_lat_max = 99999. And when nothing is left the
+    # nanmin of an all-NaN slice is itself NaN, which used to be written into
+    # the global attributes verbatim as "nan"; emit an empty string instead.
+    _la = _resolve(src_ds, "latitude", "LATITUDE")
+    _lo = _resolve(src_ds, "longitude", "LONGITUDE")
+    lat_vals = (np.where(np.abs(src_ds[_la].values) > 90, np.nan,
+                         src_ds[_la].values)
+                if _la else np.array([np.nan]))
+    lon_vals = (np.where(np.abs(src_ds[_lo].values) > 180, np.nan,
+                         src_ds[_lo].values)
+                if _lo else np.array([np.nan]))
 
-    # Vertical extent for geospatial_vertical_* (EGO expects the pressure range).
-    if "pressure" in src_ds:
-        _p = src_ds["pressure"].values
-        _p = _p[np.isfinite(_p)]
+    def _geo(arr, fn):
+        """nanmin/nanmax that yields '' rather than 'nan' for an empty slice."""
+        a = np.asarray(arr, dtype=np.float64)
+        if not np.isfinite(a).any():
+            return ""
+        return f"{float(fn(a[np.isfinite(a)])):.4f}"
+
+    # Vertical extent for geospatial_vertical_* (EGO expects the pressure
+    # range). Accept either naming, and exclude the 99999 fill an EGO source
+    # uses — without that the reported maximum depth is 99999 dbar.
+    _pn = _resolve(src_ds, "pressure", "PRES")
+    if _pn:
+        _p = np.asarray(src_ds[_pn].values, dtype=np.float64)
+        _p = _p[np.isfinite(_p) & (_p < 99999.0 - 1)]
         vert_min = f"{float(_p.min()):.2f}" if _p.size else ""
         vert_max = f"{float(_p.max()):.2f}" if _p.size else ""
     else:
@@ -1431,10 +1577,10 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
         "deployment_code": deployment_name,
         "license":         "https://creativecommons.org/licenses/by-nc/4.0/",
         "quality_index":   meta.get("quality_index", "unknown quality"),
-        "geospatial_lat_min": f"{float(np.nanmin(lat_vals)):.4f}",
-        "geospatial_lat_max": f"{float(np.nanmax(lat_vals)):.4f}",
-        "geospatial_lon_min": f"{float(np.nanmin(lon_vals)):.4f}",
-        "geospatial_lon_max": f"{float(np.nanmax(lon_vals)):.4f}",
+        "geospatial_lat_min": _geo(lat_vals, np.min),
+        "geospatial_lat_max": _geo(lat_vals, np.max),
+        "geospatial_lon_min": _geo(lon_vals, np.min),
+        "geospatial_lon_max": _geo(lon_vals, np.max),
         "geospatial_vertical_min": vert_min,
         "geospatial_vertical_max": vert_max,
         "time_coverage_start": t_start,
@@ -1523,6 +1669,24 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
                 encoding[var] = {"dtype": "float32"}
         # char arrays — no special encoding needed
 
+    # Refuse to publish a file with no science variables.
+    #
+    # This is exactly what used to happen for L1: _VAR_MAP is keyed on the
+    # lowercase L0 names, an L1 source carries EGO names, every lookup missed,
+    # and a metadata-only shell with N_PARAM=0 was written and reported as a
+    # success. It then loaded 160,393 observations with zero measurements into
+    # the database without complaint. Fail loudly instead.
+    if not written_params:
+        src_ds.close()
+        raise ValueError(
+            f"refusing to write {out_path}: no science parameters were "
+            f"resolved from {src_path}. Looked for both the internal names "
+            f"({', '.join(list(_VAR_MAP)[:4])}, ...) and their EGO equivalents "
+            f"({', '.join(i['ego'] for i in list(_VAR_MAP.values())[:4])}, ...). "
+            f"Source variables present: "
+            f"{', '.join(sorted(src_ds.data_vars)[:15])}"
+        )
+
     ds_out.to_netcdf(out_path, mode="w", format="NETCDF4", encoding=encoding)
     src_ds.close()
 
@@ -1533,28 +1697,84 @@ def convert_to_ego(src_path: str, out_path: str, deploy_yaml: str = None,
 
 
 def run_ego_conversion(l0_path=None, l1_path=None, deploy_yaml=None,
-                       output_dir=None):
+                       output_dir=None, legacy_ego_dir=False):
     """
-    Convert both L0 and L1 to EGO format. Called by run_pipeline.py.
-    Writes to output_dir/EGO-timeseries/.
+    Convert L0 and L1 to EGO format. Called by run_pipeline.py.
+
+    Each product is written into the timeseries directory of the level it
+    describes — output_dir/L0/L0_timeseries/ and output_dir/L1/L1_timeseries/,
+    per pipeline/layout.py. One complete EGO file per processing level, and no
+    separate EGO-timeseries/ directory.
+
+    The old layout put both conversions in output_dir/EGO-timeseries/, which
+    made "EGO" look like a third processing level alongside L0 and L1 when it
+    is really a file format, and left two files per level with neither being
+    complete: step23's L1 had the science but none of the PLATFORM_/
+    DEPLOYMENT_/HISTORY_ blocks, while this converter's L1 had those blocks and
+    no science at all. Writing one file per level removes the ambiguity about
+    which is authoritative.
+
+    Pass legacy_ego_dir=True to restore the old EGO-timeseries/ location.
     """
     if output_dir is None:
         from config import OUTPUT_DIR
         output_dir = OUTPUT_DIR
 
-    ego_dir = os.path.join(output_dir, "EGO-timeseries")
-    os.makedirs(ego_dir, exist_ok=True)
+    def _dest(level, glider_id):
+        """
+        The canonical product path for a level.
+
+        No '_EGO' in the name. The EGO-format file IS the L0/L1 product, not a
+        parallel copy of it, so it carries the plain product name:
+
+            output/L0/L0_timeseries/incois_glider_<ID>_L0.nc
+            output/L1/L1_timeseries/incois_glider_<ID>_L1.nc
+
+        Naming it *_EGO.nc left two files per level and no statement about
+        which one downstream consumers should use.
+        """
+        if legacy_ego_dir:
+            d = os.path.join(output_dir, "EGO-timeseries")
+        else:
+            # layout.py owns the directory names; do not restate them here.
+            import layout
+            d = layout.product_dir(output_dir, level, "timeseries")
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, f"incois_glider_{glider_id}_{level}.nc")
+
+    try:
+        from config import GLIDER_ID as _gid
+    except ImportError:
+        _gid = "unknown"
 
     results = {}
-    if l0_path and os.path.exists(l0_path):
-        base = os.path.splitext(os.path.basename(l0_path))[0]
-        out = os.path.join(ego_dir, base + "_EGO.nc")
-        results["ego_l0"] = convert_to_ego(l0_path, out, deploy_yaml, is_l1=False)
 
-    if l1_path and os.path.exists(l1_path):
-        base = os.path.splitext(os.path.basename(l1_path))[0]
-        out = os.path.join(ego_dir, base + "_EGO.nc")
-        results["ego_l1"] = convert_to_ego(l1_path, out, deploy_yaml, is_l1=True)
+    for level, src, is_l1 in (("L0", l0_path, False), ("L1", l1_path, True)):
+        if not src or not os.path.exists(src):
+            continue
+        out = _dest(level, _gid)
+
+        # The L1 source IS the destination: step23 already wrote the plain
+        # product name there and this pass upgrades it in place (adding the
+        # PLATFORM_/DEPLOYMENT_/HISTORY_ blocks it lacks). Write to a temporary
+        # file and swap, so a failure mid-write cannot destroy the input that
+        # produced it.
+        same = os.path.abspath(out) == os.path.abspath(src)
+        target = out + ".tmp" if same else out
+
+        try:
+            convert_to_ego(src, target, deploy_yaml, is_l1=is_l1)
+            if same:
+                os.replace(target, out)
+                print(f"  {level}: upgraded in place -> {out}")
+            results[f"ego_{level.lower()}"] = out
+        except Exception as exc:
+            # A source yielding no parameters is a real failure, but it must not
+            # take the other level down with it.
+            if same and os.path.exists(target):
+                os.remove(target)          # never leave a partial .tmp behind
+            print(f"  ERROR converting {level}: {type(exc).__name__}: {exc}")
+            results[f"ego_{level.lower()}_error"] = str(exc)
 
     return results
 

@@ -131,8 +131,28 @@ def _build_gps_fix_set(nc) -> set:
 # value/_QC/_ADJUSTED/_ADJUSTED_QC/_ADJUSTED_ERROR triplets), whereas
 # step_ego.py's L1 conversion in EGO-timeseries/ currently emits N_PARAM=0
 # with no measurement variables at all.
-EGO_SEARCH_SUBDIRS = ("output/L1-timeseries", "output/EGO-timeseries",
-                      "L1-timeseries", "EGO-timeseries")
+EGO_SEARCH_SUBDIRS = (
+    # Current layout: output/<LEVEL>/<LEVEL>_timeseries/
+    "output/L1/L1_timeseries", "output/L0/L0_timeseries",
+    "L1/L1_timeseries", "L0/L0_timeseries",
+    # Legacy flat layout, still read so deployments processed before the
+    # change keep loading. See pipeline/layout.py for the full picture.
+    "output/L1-timeseries", "output/L0-timeseries", "output/EGO-timeseries",
+    "L1-timeseries", "L0-timeseries", "EGO-timeseries",
+)
+
+# EGO metadata blocks used to rank two otherwise-equivalent candidates.
+# step23 writes the science and the SENSOR/PARAMETER tables but none of these;
+# step_ego writes all of them. When both files declare the same parameters, the
+# one carrying more of the spec's metadata is the better source.
+_EGO_COMPLETENESS_MARKERS = (
+    "PLATFORM_FAMILY", "PLATFORM_TYPE", "GLIDER_SERIAL_NO",
+    "DEPLOYMENT_START_DATE", "DEPLOYMENT_END_DATE",
+    "POSITIONING_SYSTEM", "TRANS_SYSTEM",
+    "PARAMETER_UNITS", "PARAMETER_ACCURACY", "PARAMETER_RESOLUTION",
+    "SENSOR_MOUNT", "SENSOR_ORIENTATION",
+    "HISTORY_ACTION",
+)
 
 
 def _describe_ego_file(path):
@@ -162,10 +182,15 @@ def _describe_ego_file(path):
             return None                      # metadata-only shell
 
         n_param = len(nc.dimensions["N_PARAM"]) if "N_PARAM" in nc.dimensions else 0
+        n_gps = len(nc.dimensions["TIME_GPS"]) if "TIME_GPS" in nc.dimensions else 0
+        completeness = sum(1 for m in _EGO_COMPLETENESS_MARKERS
+                           if m in varnames)
         return {
             "path": path,
             "n_time": len(nc.dimensions["TIME"]) if "TIME" in nc.dimensions else 0,
             "n_param": n_param,
+            "n_gps": n_gps,
+            "completeness": completeness,
             "core": core_present,
             "has_adjusted": any(v.endswith("_ADJUSTED") for v in varnames),
             "has_qc": any(v.endswith("_QC") and v[:-3] in CORE_PARAMS
@@ -225,24 +250,34 @@ def find_ego_files(ego_dir: str, verbose: bool = True) -> dict:
             print(f"  SKIP: {os.path.basename(p)} carries no C-EGO "
                   f"measurement variables")
 
-    # Prefer the file declaring the most parameters, then the most timestamps,
-    # then the newest. Parameter count first because that is what determines
-    # how much of the deployment actually lands in the database.
+    # Rank on: parameters declared, then EGO metadata completeness, then GPS
+    # fixes, then timestamps, then mtime.
+    #
+    # Parameter count first because it decides how much of the deployment lands
+    # in the database. Completeness second so that when step23's *_L1.nc and
+    # step_ego's *_L1_EGO.nc sit in the same directory declaring the same 8
+    # parameters, the one carrying the PLATFORM_/DEPLOYMENT_/HISTORY_ blocks
+    # wins on merit rather than on whichever happened to be written last.
     for key, cands in (("ego_l1", l1_cands), ("ego_l0", l0_cands)):
         if not cands:
             continue
-        cands.sort(key=lambda i: (i["n_param"], i["n_time"],
-                                  os.path.getmtime(i["path"])), reverse=True)
+        cands.sort(key=lambda i: (i["n_param"], i["completeness"], i["n_gps"],
+                                  i["n_time"], os.path.getmtime(i["path"])),
+                   reverse=True)
         result[key] = cands[0]["path"]
         if verbose:
             best = cands[0]
             print(f"  {key}: {os.path.basename(best['path'])} "
                   f"(N_PARAM={best['n_param']}, TIME={best['n_time']:,}, "
+                  f"GPS={best['n_gps']}, meta={best['completeness']}"
+                  f"/{len(_EGO_COMPLETENESS_MARKERS)}, "
                   f"core={','.join(best['core'])})")
             for other in cands[1:]:
                 print(f"    ignored {os.path.basename(other['path'])} "
                       f"(N_PARAM={other['n_param']}, "
-                      f"TIME={other['n_time']:,})")
+                      f"TIME={other['n_time']:,}, GPS={other['n_gps']}, "
+                      f"meta={other['completeness']}"
+                      f"/{len(_EGO_COMPLETENESS_MARKERS)})")
     return result
 
 

@@ -6,20 +6,33 @@ run_pipeline.py — INCOIS Glider L1 Processing Pipeline
 Produces a complete set of outputs from raw glider data:
 
   L0 products (raw / no QC):
-    output/L0-timeseries/incois_glider_{ID}_L0.nc
-    output/L0-profiles/incois_glider_{ID}_profile_NNNN.nc  (one per dive)
-    output/L0-gridfiles/incois_glider_{ID}_L0_grid.nc
+    output/L0/L0_timeseries/incois_glider_{ID}_L0.nc
+    output/L0/L0_timeseries/incois_glider_{ID}_L0_EGO.nc      (EGO 1.5)
+    output/L0/L0_profiles/incois_glider_{ID}_profile_NNNN.nc  (one per dive)
+    output/L0/L0_gridfiles/incois_glider_{ID}_L0_grid.nc
 
   L1 products (ARGO RTQC flags applied):
-    output/L1-timeseries/incois_glider_{ID}_L1.nc
-    output/L1-profiles/incois_glider_{ID}_L1_profile_NNNN.nc
-    output/L1-gridfiles/incois_glider_{ID}_L1_grid.nc
+    output/L1/L1_timeseries/incois_glider_{ID}_L1.nc
+    output/L1/L1_timeseries/incois_glider_{ID}_L1_EGO.nc      (EGO 1.5)
+    output/L1/L1_profiles/incois_glider_{ID}_L1_profile_NNNN.nc
+    output/L1/L1_gridfiles/incois_glider_{ID}_L1_grid.nc
 
-  Plots (19 diagnostic PNG files):
+  Plots (diagnostic PNG files):
     output/plots/
 
   Reports:
     output/reports/incois_glider_{ID}_summary.txt
+
+  Database for THIS deployment only:
+    output/{deployment}.db
+
+The combined database covering every deployment lives beside the deployment
+folders, not inside any one of them:
+
+    {Raw_Data}/glider_rtqc.db
+
+All of these paths come from layout.py; nothing here or in the step modules
+hardcodes a directory name.
 
 Usage
 -----
@@ -90,20 +103,18 @@ from config import (
 
 # ── Output directory helpers ─────────────────────────────────────
 def _dirs():
-    """Create and return all output directory paths."""
-    d = {
-        "L0_ts":       os.path.join(OUTPUT_DIR, "L0-timeseries"),
-        "L0_profiles": os.path.join(OUTPUT_DIR, "L0-profiles"),
-        "L0_grid":     os.path.join(OUTPUT_DIR, "L0-gridfiles"),
-        "L1_ts":       os.path.join(OUTPUT_DIR, "L1-timeseries"),
-        "L1_profiles": os.path.join(OUTPUT_DIR, "L1-profiles"),
-        "L1_grid":     os.path.join(OUTPUT_DIR, "L1-gridfiles"),
-        "plots":       os.path.join(OUTPUT_DIR, "plots"),
-        "reports":     os.path.join(OUTPUT_DIR, "reports"),
-        "cache":       _cfg.CACHE_DIR,
-    }
-    for path in d.values():
-        os.makedirs(path, exist_ok=True)
+    """
+    Create and return all output directory paths.
+
+    The layout itself lives in layout.py so that the steps, the tools, the
+    dashboard and the database loader all read it from one place instead of
+    each hardcoding the directory names.
+    """
+    import layout
+
+    d = layout.make_all(OUTPUT_DIR)
+    d["cache"] = _cfg.CACHE_DIR
+    os.makedirs(d["cache"], exist_ok=True)
     return d
 
 
@@ -316,6 +327,7 @@ def main():
     print("=" * 60)
     print("  STEP EGO: EGO 1.5 NetCDF Conversion")
     print("=" * 60)
+    ego_results = {}
     try:
         from step_ego import run_ego_conversion
         from config import DEPLOY_YAML
@@ -325,10 +337,52 @@ def main():
             deploy_yaml=DEPLOY_YAML,
             output_dir=OUTPUT_DIR,
         )
-        ego_dir = os.path.join(OUTPUT_DIR, "EGO-timeseries")
-        print(f"  EGO outputs: {ego_dir}")
+        for k, v in ego_results.items():
+            print(f"  {k}: {v}")
+        if not any(k in ego_results for k in ("ego_l0", "ego_l1")):
+            print("  WARNING: no EGO product was produced")
     except Exception as e:
-        print(f"  WARNING: EGO conversion failed ({e}) — pipeline products unaffected")
+        # Print the traceback, not just the message. A bare message here hid a
+        # real failure behind "pipeline products unaffected" and the missing
+        # product was only noticed by inspecting the output directory.
+        import traceback
+        print(f"  ERROR: EGO conversion failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+    print()
+
+    # ── Step DB: per-deployment SQLite ───────────────────────────
+    #
+    # Written into this deployment's own output/ so the folder is a
+    # self-contained product. The combined database that spans every
+    # deployment is built separately, from the dashboard's Ingest action or
+    # db.load_deployment, and lives beside the deployment folders.
+    print("=" * 60)
+    print("  STEP DB: per-deployment SQLite")
+    print("=" * 60)
+    try:
+        import layout
+        sys.path.insert(0, os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        from db.load_deployment import load_deployment
+
+        dep_db = layout.deployment_db(OUTPUT_DIR, GLIDER_ID)
+        res = load_deployment(
+            ego_l1_path=ego_results.get("ego_l1"),
+            ego_l0_path=ego_results.get("ego_l0"),
+            ego_dir=OUTPUT_DIR,
+            db_path=dep_db,
+            glider_id=GLIDER_ID,
+            verbose=True,
+        )
+        print(f"  {dep_db}")
+        print(f"  observation={res['rows']['observation']:,}  "
+              f"core={','.join(res['core_params'])}  "
+              f"bgc={','.join(res['bgc_params'])}")
+    except Exception as e:
+        import traceback
+        print(f"  ERROR: per-deployment DB build failed: "
+              f"{type(e).__name__}: {e}")
+        traceback.print_exc()
     print()
 
     # ── Done ─────────────────────────────────────────────────────
@@ -337,6 +391,8 @@ def main():
     print(f"  PIPELINE COMPLETE in {elapsed:.1f}s")
     print(f"  All outputs in: {OUTPUT_DIR}")
     print()
+    import layout as _layout
+
     print("  L0 products:")
     print(f"    timeseries:  {dirs['L0_ts']}")
     print(f"    profiles:    {dirs['L0_profiles']}")
@@ -347,9 +403,25 @@ def main():
     print(f"    profiles:    {dirs['L1_profiles']}")
     print(f"    gridfiles:   {dirs['L1_grid']}")
     print()
-    print(f"  EGO:     {os.path.join(OUTPUT_DIR, 'EGO-timeseries')}")
-    print(f"  Plots:   {dirs['plots']}")
-    print(f"  Reports: {dirs['reports']}")
+    print(f"  Plots:    {dirs['plots']}")
+    print(f"  Reports:  {dirs['reports']}")
+    print(f"  Database: {_layout.deployment_db(OUTPUT_DIR, GLIDER_ID)}")
+    print()
+    # DATA_DIR is the deployment folder, so its parent is Raw_Data — where the
+    # combined database belongs.
+    print(f"  Combined DB (all deployments): "
+          f"{_layout.combined_db(os.path.dirname(os.path.abspath(_cfg.DATA_DIR)))}")
+
+    stale = _layout.legacy_dirs_present(OUTPUT_DIR)
+    if stale:
+        print()
+        print("  NOTE: directories from the previous flat layout are still "
+              "present.")
+        print("        They are still read, but the products above are the "
+              "current ones.")
+        for p in stale:
+            print(f"          {p}")
+        print("        Remove them once you have confirmed the new outputs.")
     print("=" * 60)
 
 
