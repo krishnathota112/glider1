@@ -19,7 +19,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
          │
          ▼
 ┌─────────────────────────────────────────────┐
-│  STEP 1: Binary → L0 NetCDF                │
+│  STEP 1: Binary → L0 NetCDF                 │
 │  • Decode via dbdreader                     │
 │  • Sync flight + science onto unified time  │
 │  • Derive: salinity, density, depth         │
@@ -33,7 +33,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
          │
          ▼
 ┌─────────────────────────────────────────────┐
-│  STEP 2/3: L0 → L1 (QC + ARGO Flags)       │
+│  STEP 2/3: L0 → L1 (QC + ARGO Flags)        │
 │                                             │
 │  Pre-clean:                                 │
 │    • Time crop (deployment.yml window)      │
@@ -57,7 +57,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │    → Writes *_corrected variables           │
 │                                             │
 │  Physics QC:                                │
-│    • Per-profile IQR (T/S/O2)              │
+│    • Per-profile IQR (T/S/O2)               │
 │    • Median despike                         │
 │    • Savitzky-Golay smoothing per profile   │
 │    • Horizontal diff outliers (salinity)    │
@@ -65,7 +65,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │                                             │
 │  Oxygen lag correction:                     │
 │    • First-order tau=30s, profile-aware     │
-│    → Writes oxygen_concentration_lag_corrected│
+│    Writes oxygen_concentration_lag_corrected│
 │                                             │
 │  ARGO RTQC Flag Assignment:                 │
 │    • Test 2:  Impossible date               │
@@ -78,7 +78,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │    • Test 14: Density inversion             │
 │    • Test 16: Gross sensor drift            │
 │    • Test 19: Deepest pressure              │
-│    • Pressure cascade (QC=4 → T/S/O2)      │
+│    • Pressure cascade (QC=4 → T/S/O2)       │
 │    • Temperature cascade → salinity         │
 │                                             │
 │  Flag logic:                                │
@@ -100,7 +100,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │  STEP 5: Plotting                           │
 │                                             │
 │  • L0 gridplot (raw, all values)            │
-│  • L1 gridplot (QC good only)              │
+│  • L1 gridplot (QC good only)               │
 │  • Individual variable section plots        │
 │    (uses pre-built grid, pcolormesh)        │
 │  • Physical range guard on colorscale       │
@@ -118,7 +118,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │  • Mixed Layer Depth                        │
 │  • Sensor failure detection:                │
 │    - Simultaneous-stop grouping             │
-│    - Never-installed vs mid-mission failure  │
+│    - Never-installed vs mid-mission failure │
 │    - Oxygen bad-block detection (from QC)   │
 │  • Summary report (.txt):                   │
 │    - Deployment metadata                    │
@@ -144,7 +144,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
          │
          ▼
 ┌─────────────────────────────────────────────┐
-│  STEP EGO: EGO 1.5 NetCDF Conversion       │
+│  STEP EGO: EGO 1.5 NetCDF Conversion        │
 │                                             │
 │  • Variable renaming → ARGO/EGO canonical:  │
 │    temperature → TEMP                       │
@@ -156,7 +156,7 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │    backscatter_700 → BBP700                 │
 │                                             │
 │  • DOXY unit conversion:                    │
-│    umol/L ÷ (density_kg_m3 / 1000)         │
+│    umol/L ÷ (density_kg_m3 / 1000)          │
 │    = micromole/kg (real arithmetic)         │
 │                                             │
 │  • Mandatory EGO structure:                 │
@@ -180,10 +180,10 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │    - Optics corruption (value=pressure?)    │
 │    - Mission gap detection                  │
 │    - Sample cadence verification            │
-│  • GPS anomalies (jumps >50km)             │
+│  • GPS anomalies (jumps >50km)              │
 │  • T-S plausibility                         │
 │  • QC flag consistency                      │
-│  • L0 vs L1 comparison                     │
+│  • L0 vs L1 comparison                      │
 └─────────────────────────────────────────────┘
          │
          ▼
@@ -194,12 +194,12 @@ Raw Binary Files (.dbd/.ebd/.dcd/.ecd)
 │  • 4-table SQLite schema:                   │
 │    - deployment (metadata)                  │
 │    - observation (time, position, depth)    │
-│    - core (PRES, TEMP, PSAL, CNDC)         │
-│    - bgc (DOXY, CHLA, CDOM, BBP700, ...)   │
-│  • Pattern A: value, qc_flag,              │
+│    - core (PRES, TEMP, PSAL, CNDC)          │
+│    - bgc (DOXY, CHLA, CDOM, BBP700, ...)    │
+│  • Pattern A: value, qc_flag,               │
 │    value_adjusted, adjusted_qc_flag         │
 │  • Idempotent (deterministic observation_id)│
-│  • Safe to re-run on same deployment       │
+│  • Safe to re-run on same deployment        │
 └─────────────────────────────────────────────┘
 
 ---

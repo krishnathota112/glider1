@@ -793,7 +793,12 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
 
     # Diagnostic: show what's in the loaded dataset
     if not is_1d:
-        print(f"  Grid dims: time={len(ds.time)} depth={len(ds.depth)}")
+        # Support both 'depth' and 'DEPTH' dimension names
+        depth_dim = 'depth' if 'depth' in ds.dims else 'DEPTH' if 'DEPTH' in ds.dims else None
+        if depth_dim:
+            print(f"  Grid dims: time={len(ds.time)} {depth_dim}={len(ds[depth_dim])}")
+        else:
+            print(f"  Grid dims: time={len(ds.time)} (no depth dimension found)")
         for var in VARS_TO_PLOT:
             if var in ds:
                 print(f"    {var}: shape={ds[var].shape} dims={ds[var].dims}")
@@ -803,7 +808,9 @@ def plot_l1(grid_path, plot_path=None, l1_path=None):
                                  f"incois_glider_{GLIDER_ID}_L1_gridplot.png")
 
     t_vals     = ds.time.values
-    depth_vals = ds.depth.values if not is_1d else None
+    # Support both 'depth' and 'DEPTH' dimension names
+    depth_dim = 'depth' if 'depth' in ds else 'DEPTH' if 'DEPTH' in ds else None
+    depth_vals = ds[depth_dim].values if not is_1d and depth_dim else None
 
     _report_gaps(t_vals)
 

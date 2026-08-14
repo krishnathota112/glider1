@@ -128,14 +128,16 @@ def split_profiles(nc_path, out_dir, base_name, apply_qc=False):
             # Skip dimension coordinates — they can't be overwritten in-place
             if base_v in ds_masked.dims:
                 continue
+            # Skip if base_v is a coordinate (index variable)
+            if base_v in ds_masked.coords and base_v in ds_masked.dims:
+                continue
             if base_v in ds_masked:
                 qc = ds_masked[qv].values.astype(int)
                 bad = (qc == 3) | (qc == 4)
                 vals = ds_masked[base_v].values.copy().astype(float)
                 vals[bad] = np.nan
-                ds_masked[base_v] = xr.DataArray(vals,
-                                                  dims=ds_masked[base_v].dims,
-                                                  attrs=ds_masked[base_v].attrs)
+                # Use assign to avoid IndexVariable error
+                ds_masked = ds_masked.assign({base_v: (ds_masked[base_v].dims, vals, ds_masked[base_v].attrs)})
     else:
         ds_masked = ds
 

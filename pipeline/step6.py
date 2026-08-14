@@ -448,10 +448,13 @@ def _count_profiles(path):
     if not os.path.exists(path):
         return 0, []
     ds = xr.open_dataset(path)
-    if "profile_index" not in ds:
+    # Support both old and new profile index names
+    pi_var = ("profile_index" if "profile_index" in ds
+              else "PHASE_NUMBER" if "PHASE_NUMBER" in ds else None)
+    if pi_var is None:
         ds.close()
         return 0, []
-    pi = ds["profile_index"].values
+    pi = ds[pi_var].values
     profiles = list(np.unique(pi[np.isfinite(pi)]).astype(int))
     ds.close()
     return len(profiles), profiles
@@ -495,11 +498,12 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
     w("  " + "-" * 50)
     if l0_path and os.path.exists(l0_path):
         ds0 = xr.open_dataset(l0_path)
-        n0 = len(ds0.time)
-        t0_start = str(ds0.time.values[0])[:19]
-        t0_end   = str(ds0.time.values[-1])[:19]
-        dur_days = float((ds0.time.values[-1].astype("datetime64[D]") -
-                          ds0.time.values[0].astype("datetime64[D]")).astype(int))
+        t0_vals = _get_time(ds0)
+        n0 = len(t0_vals)
+        t0_start = str(t0_vals[0])[:19]
+        t0_end   = str(t0_vals[-1])[:19]
+        dur_days = float((t0_vals[-1].astype("datetime64[D]") -
+                          t0_vals[0].astype("datetime64[D]")).astype(int))
         n_prof_l0, _ = _count_profiles(l0_path)
         w(f"  File:         {os.path.basename(l0_path)}")
         w(f"  Size:         {os.path.getsize(l0_path)/1024/1024:.1f} MB")
@@ -507,20 +511,20 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
         w(f"  Duration:     {dur_days:.0f} days")
         w(f"  Observations: {n0:,}")
         w(f"  Profiles:     {n_prof_l0}")
-        if "depth" in ds0:
-            max_d = float(np.nanmax(ds0["depth"].values))
+        _depth_v = "depth" if "depth" in ds0 else "DEPTH" if "DEPTH" in ds0 else None
+        if _depth_v:
+            max_d = float(np.nanmax(ds0[_depth_v].values))
             w(f"  Max depth:    {max_d:.1f} m")
 
-        # GPS track distance — computed between profile endpoints only,
-        # not between every interpolated timestamp.
-        # Summing all consecutive lat/lon differences gives Earth-circumference
-        # artifacts because most positions are linearly interpolated between
-        # the ~360 actual surface GPS fixes.
-        if "latitude" in ds0 and "longitude" in ds0 and "profile_index" in ds0:
-            lat = ds0["latitude"].values
-            lon = ds0["longitude"].values
-            pi  = ds0["profile_index"].values
-            # Use the mean lat/lon of each profile as its representative position
+        # GPS track distance — computed between profile endpoints only
+        _lat_v = "latitude" if "latitude" in ds0 else "LATITUDE" if "LATITUDE" in ds0 else None
+        _lon_v = "longitude" if "longitude" in ds0 else "LONGITUDE" if "LONGITUDE" in ds0 else None
+        _pi_v  = ("profile_index" if "profile_index" in ds0
+                  else "PHASE_NUMBER" if "PHASE_NUMBER" in ds0 else None)
+        if _lat_v and _lon_v and _pi_v:
+            lat = ds0[_lat_v].values
+            lon = ds0[_lon_v].values
+            pi  = ds0[_pi_v].values
             unique_profiles = np.unique(pi[np.isfinite(pi)])
             prof_lats, prof_lons = [], []
             for p in unique_profiles:
@@ -558,9 +562,10 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
     w("  " + "-" * 50)
     if l1_path and os.path.exists(l1_path):
         ds1 = xr.open_dataset(l1_path)
-        n1 = len(ds1.time)
-        t1_start = str(ds1.time.values[0])[:19]
-        t1_end   = str(ds1.time.values[-1])[:19]
+        t1_vals = _get_time(ds1)
+        n1 = len(t1_vals)
+        t1_start = str(t1_vals[0])[:19]
+        t1_end   = str(t1_vals[-1])[:19]
         n_prof_l1, _ = _count_profiles(l1_path)
         w(f"  File:         {os.path.basename(l1_path)}")
         w(f"  Size:         {os.path.getsize(l1_path)/1024/1024:.1f} MB")
@@ -599,16 +604,21 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
         w("  GRID PRODUCT")
         w("  " + "-" * 50)
         g = xr.open_dataset(grid_path)
+        g_time = _get_time(g)
+        _gdepth = "depth" if "depth" in g else "DEPTH" if "DEPTH" in g else None
         w(f"  File:    {os.path.basename(grid_path)}")
         w(f"  Size:    {os.path.getsize(grid_path)/1024/1024:.1f} MB")
-        w(f"  Dims:    {len(g.time)} profiles × {len(g.depth)} depth bins")
-        w(f"  Depth:   {float(g.depth.min()):.0f} – {float(g.depth.max()):.0f} m")
+        w(f"  Dims:    {len(g_time)} profiles × "
+          f"{len(g[_gdepth]) if _gdepth else '?'} depth bins")
+        if _gdepth:
+            w(f"  Depth:   {float(g[_gdepth].min()):.0f} – "
+              f"{float(g[_gdepth].max()):.0f} m")
         g.close()
 
     # ---- Data gaps ----
     if l1_path and os.path.exists(l1_path):
         ds1 = xr.open_dataset(l1_path)
-        t_vals = ds1.time.values
+        t_vals = _get_time(ds1)
         if len(t_vals) > 1:
             dt_h = np.diff(t_vals.astype("datetime64[h]").astype(float))
             gaps = np.where(dt_h > 48)[0]
@@ -623,11 +633,9 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
         ds1.close()
 
     # ---- Sensor failure detection ----
-    # Reads L0 for raw presence/absence (ground truth before QC nulls values)
-    # and L1 QC flags for oxygen (so it's consistent with the flag summary above).
     if l0_path and os.path.exists(l0_path):
         ds0 = xr.open_dataset(l0_path)
-        t_all = ds0.time.values
+        t_all = _get_time(ds0)
         n_total = len(t_all)
 
         # Use L1 end time as the reference "mission end" when available.
@@ -636,8 +644,9 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
         # positives when the time-crop cuts the series short.
         if l1_path and os.path.exists(l1_path):
             ds1_ref = xr.open_dataset(l1_path)
-            mission_end   = ds1_ref.time.values[-1]
-            mission_start = ds1_ref.time.values[0]
+            t1_ref = _get_time(ds1_ref)
+            mission_end   = t1_ref[-1]
+            mission_start = t1_ref[0]
             ds1_ref.close()
         else:
             mission_end   = t_all[-1]
@@ -648,20 +657,26 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
 
         sensor_issues = []
 
-        for var in ["oxygen_concentration", "chlorophyll", "cdom",
-                    "backscatter_700", "temperature", "salinity"]:
-            if var not in ds0:
+        # Variable name candidates — support both old internal and new canonical names
+        _sensor_vars = [
+            ("oxygen_concentration", "DOXY"),
+            ("chlorophyll", "CHLA"),
+            ("cdom", "CDOM"),
+            ("backscatter_700", "BBP700"),
+            ("temperature", "TEMP"),
+            ("salinity", "PSAL"),
+        ]
+        for old_name, new_name in _sensor_vars:
+            var = old_name if old_name in ds0 else new_name if new_name in ds0 else None
+            if var is None:
                 continue
             v = ds0[var].values
             valid = np.isfinite(v)
             n_valid = int(np.sum(valid))
 
-            # Never-installed: <0.5% coverage throughout — skip,
-            # not a failure, just no sensor on this deployment
             if n_valid < max(n_total * 0.005, 5):
                 continue
 
-            # Only consider points within the mission window
             in_mission = (t_all >= mission_start) & (t_all <= mission_end)
             valid_in_mission = valid & in_mission
             if np.sum(valid_in_mission) < 5:
@@ -693,7 +708,7 @@ def write_summary_report(l0_path, l1_path, grid_path, report_path=None):
             ds1_tmp = xr.open_dataset(l1_path)
             if "oxygen_concentration_QC" in ds1_tmp:
                 o_qc = ds1_tmp["oxygen_concentration_QC"].values.astype(int)
-                t_l1 = ds1_tmp.time.values
+                t_l1 = _get_time(ds1_tmp)
                 bad_mask = (o_qc == 4)
                 if np.sum(bad_mask) > 100:
                     bad_times = t_l1[bad_mask]
@@ -829,15 +844,14 @@ def plot_mld(l1_path, grid_path=None, plot_path=None):
         return None
 
     ds = xr.open_dataset(src_path)
-    is_grid = "depth" in ds.dims
+    _depth_dim = "depth" if "depth" in ds.dims else "DEPTH" if "DEPTH" in ds.dims else None
+    is_grid = _depth_dim is not None
 
     if not is_grid:
-        # timeseries — need gridded for MLD
         ds.close()
         print("  WARNING: MLD requires gridded data — skipping")
         return None
 
-    # --- Try GliderTools MLD ---
     mld_times = None
     mld_vals  = None
 
@@ -845,14 +859,17 @@ def plot_mld(l1_path, grid_path=None, plot_path=None):
         import glidertools as gt
         import warnings
         warnings.filterwarnings("ignore")
-        # GT needs xr.Dataset with specific variable names
-        # Map our names → GT expects 'temperature', 'salinity', 'depth'
-        if "potential_temperature" in ds and "salinity" in ds:
-            # Build a minimal dataset GT can use
+        _temp_v = ("potential_temperature" if "potential_temperature" in ds
+                   else "POTENTIAL_TEMP" if "POTENTIAL_TEMP" in ds
+                   else "temperature" if "temperature" in ds
+                   else "TEMP" if "TEMP" in ds else None)
+        _sal_v  = "salinity" if "salinity" in ds else "PSAL" if "PSAL" in ds else None
+        _time_coord = "time" if "time" in ds.coords else "TIME"
+        if _temp_v and _sal_v:
             gt_ds = xr.Dataset({
-                "temperature": ds["potential_temperature"],
-                "salinity":    ds["salinity"],
-            }, coords={"depth": ds.depth, "time": ds.time})
+                "temperature": ds[_temp_v],
+                "salinity":    ds[_sal_v],
+            }, coords={_depth_dim: ds[_depth_dim], "time": _get_time(ds)})
             result = gt.physics.mixed_layer_depth(
                 gt_ds, variable="temperature",
                 thresh=0.2, ref_depth=10, verbose=False)
@@ -861,7 +878,7 @@ def plot_mld(l1_path, grid_path=None, plot_path=None):
                     mld_vals = result.values
                 else:
                     mld_vals = np.array(result)
-                mld_times = ds.time.values
+                mld_times = _get_time(ds)
                 print(f"    MLD via GliderTools: {len(mld_vals)} profiles")
     except Exception as e:
         print(f"    GliderTools MLD failed ({e}) — using manual calculation")
@@ -893,7 +910,7 @@ def plot_mld(l1_path, grid_path=None, plot_path=None):
                     # No threshold crossing — MLD = deepest valid point
                     valid_depths = D[valid]
                     mld_vals[i] = float(valid_depths[-1]) if len(valid_depths) > 0 else np.nan
-            mld_times = ds.time.values
+            mld_times = _get_time(ds)
             print(f"    MLD via manual threshold: {int(np.sum(np.isfinite(mld_vals)))} profiles")
 
     if mld_vals is None or mld_times is None:
@@ -966,29 +983,19 @@ def run_gt_comparison(l0_path, l1_path, report_path=None):
 
     l0 = xr.open_dataset(l0_path)
     l1 = xr.open_dataset(l1_path)
-    n  = len(l0.time)
+    t0_vals = _get_time(l0)
+    t1_vals = _get_time(l1)
+    n  = len(t0_vals)
 
-    # ------------------------------------------------------------------
-    # Put L0 and L1 on a shared time axis before comparing anything.
-    #
-    # L1 is not a row-for-row copy of L0 — step23.pre_clean() crops to the
-    # deployment window and drops shallow test dives, so L1 is normally a
-    # subset. Comparing by position would pair an L0 sample against whichever
-    # L1 sample happened to land at the same index, i.e. a different moment in
-    # the deployment, and every difference statistic below would be noise.
-    #
-    # np.intersect1d gives the timestamps both files actually share, and the
-    # returned index arrays let us slice each file onto that common axis.
-    # ------------------------------------------------------------------
-    t0_vals = l0.time.values
-    t1_vals = l1.time.values
-    _common, i0, i1 = np.intersect1d(t0_vals, t1_vals,
-                                     return_indices=True)
+    # Align on common timestamps (L1 is a subset of L0 after pre-clean)
+    _common, i0, i1 = np.intersect1d(t0_vals, t1_vals, return_indices=True)
     n_common = len(_common)
     aligned = n_common > 0
+    _time_dim0 = "TIME" if "TIME" in l0.dims else "time"
+    _time_dim1 = "TIME" if "TIME" in l1.dims else "time"
     if aligned:
-        l0_cmp = l0.isel(time=i0)
-        l1_cmp = l1.isel(time=i1)
+        l0_cmp = l0.isel({_time_dim0: i0})
+        l1_cmp = l1.isel({_time_dim1: i1})
     else:
         l0_cmp = l1_cmp = None
 
