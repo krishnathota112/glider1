@@ -29,19 +29,31 @@ _SKIP_GRID_VARS = {
     "profile_index", "profile_direction", "distance_over_ground",
     "mission_number", "profile_time_start", "profile_time_end",
     "depth",
+    # EGO equivalents (L1 uses uppercase names)
+    "PHASE", "PHASE_NUMBER", "DISTANCE_OVER_GROUND",
+    "DEPTH", "POSITIONING_METHOD",
+    "HEADING", "PITCH", "ROLL",
+    "WAYPOINT_LATITUDE", "WAYPOINT_LONGITUDE",
+    "POSITION_QC", "TIME_QC",
 }
 
 
 def _get_vars_to_grid(ds):
     """Return all numeric time-dimension variables suitable for gridding."""
+    # The time dimension is 'time' in L0 (IOOS) and 'TIME' in L1 (EGO).
+    time_dim = "TIME" if "TIME" in ds.dims else "time"
     result = []
     for var in ds.data_vars:
         if var.endswith("_QC"):
             continue
-        if var in _SKIP_GRID_VARS:
+        if var.endswith("_ADJUSTED") or var.endswith("_ADJUSTED_QC"):
+            continue
+        if var.endswith("_ADJUSTED_ERROR"):
+            continue
+        if var in _SKIP_GRID_VARS or var.upper() in _SKIP_GRID_VARS:
             continue
         da = ds[var]
-        if da.dims == ("time",) and np.issubdtype(da.dtype, np.floating):
+        if da.dims == (time_dim,) and np.issubdtype(da.dtype, np.floating):
             result.append(var)
     return result
 
