@@ -36,6 +36,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ -z "$RAW_DATA_DIR" ]]; then
     # Auto-detect: look for a Raw_Data sibling or common locations
     for candidate in \
@@ -63,8 +65,6 @@ if [[ ! -d "$RAW_DATA_DIR" ]]; then
 fi
 
 RAW_DATA_DIR="$(cd "$RAW_DATA_DIR" && pwd)"
-
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE="$REPO_ROOT/pipeline/run_pipeline.py"
 REPORT="$RAW_DATA_DIR/batch_report.txt"
 
@@ -207,19 +207,19 @@ for i in "${!DEPLOYMENTS[@]}"; do
         if [[ -d "$OUT" ]]; then
             echo "  outputs:"
             # L0
-            for f in "$OUT"/L0-timeseries/*.nc 2>/dev/null; do
+            for f in "$OUT"/L0-timeseries/*.nc; do
                 [[ -f "$f" ]] && echo "    L0 timeseries: $(basename "$f") ($(du -h "$f" | cut -f1))"
             done
             # L1
-            for f in "$OUT"/L1-timeseries/*.nc 2>/dev/null; do
+            for f in "$OUT"/L1-timeseries/*.nc; do
                 [[ -f "$f" ]] && echo "    L1 timeseries: $(basename "$f") ($(du -h "$f" | cut -f1))"
             done
             # EGO
-            for f in "$OUT"/EGO-timeseries/*.nc 2>/dev/null; do
+            for f in "$OUT"/EGO-timeseries/*.nc; do
                 [[ -f "$f" ]] && echo "    EGO:           $(basename "$f") ($(du -h "$f" | cut -f1))"
             done
             # Grid
-            for f in "$OUT"/L1-gridfiles/*.nc 2>/dev/null; do
+            for f in "$OUT"/L1-gridfiles/*.nc; do
                 [[ -f "$f" ]] && echo "    L1 grid:       $(basename "$f") ($(du -h "$f" | cut -f1))"
             done
             # Profiles count
@@ -254,7 +254,7 @@ if [[ $DO_INGEST -eq 1 ]]; then
     for name in "${DEPLOYMENTS[@]}"; do
         dep_dir="$(resolve_root "$RAW_DATA_DIR/$name")"
         EGO_DIR="$dep_dir/output/EGO-timeseries"
-        if [[ -d "$EGO_DIR" ]] && ls "$EGO_DIR"/*.nc &>/dev/null 2>&1; then
+        if [[ -d "$EGO_DIR" ]] && ls "$EGO_DIR"/*.nc >/dev/null 2>&1; then
             "$PYTHON" -m db.load_deployment --ego-dir "$EGO_DIR" --db "$DB" 2>&1 \
                 | tail -5
         fi
