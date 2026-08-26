@@ -37,6 +37,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$RAW_DATA_DIR" ]]; then
+    # Auto-detect: look for a Raw_Data sibling or common locations
+    for candidate in \
+        "$(dirname "$REPO_ROOT")/Raw_Data" \
+        "$HOME/PAJO/GliderProcessingChain/Glider_RTQC/Raw_Data" \
+        "$HOME/Raw_Data" \
+        "/data/Raw_Data"; do
+        if [[ -d "$candidate" ]]; then
+            RAW_DATA_DIR="$candidate"
+            echo "Auto-detected Raw_Data: $RAW_DATA_DIR"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$RAW_DATA_DIR" ]]; then
     echo "ERROR: must pass the Raw_Data directory." >&2
     echo "  bash batch_run_all.sh /path/to/Raw_Data" >&2
     exit 2
