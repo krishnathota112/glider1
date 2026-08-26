@@ -977,6 +977,106 @@
         .lightbox-close:hover {
             color: #ffffff;
         }
+
+        /* ---- Destructive / secondary actions ---- */
+        /* Deleting output/ and launching a reprocess of every deployment are
+           not the same weight of action as switching a tab, so they do not
+           share the neutral .list-tab look. */
+        .danger-btn {
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            color: var(--accent-red);
+            font-family: var(--font-inter);
+            font-size: 0.78rem;
+            font-weight: 600;
+            padding: 0.4rem 0.85rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .danger-btn:hover:not(:disabled) {
+            background: rgba(239, 68, 68, 0.16);
+            border-color: var(--accent-red);
+        }
+        .danger-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .ghost-btn {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-family: var(--font-inter);
+            font-size: 0.78rem;
+            font-weight: 600;
+            padding: 0.4rem 0.85rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .ghost-btn:hover:not(:disabled) {
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .ghost-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* ---- Batch run panel ---- */
+        .batch-opts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.25rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .batch-opts label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            cursor: pointer;
+        }
+        .batch-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+            gap: 0.4rem 1rem;
+            max-height: 190px;
+            overflow-y: auto;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            margin-bottom: 1rem;
+        }
+        .batch-list label {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .batch-list .dep-note {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-left: auto;
+            padding-left: 0.5rem;
+        }
+        .batch-actions {
+            display: flex;
+            gap: 0.6rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .batch-warn {
+            font-size: 0.75rem;
+            color: var(--accent-orange);
+            line-height: 1.5;
+            margin-bottom: 0.85rem;
+        }
     </style>
 </head>
 <body>
@@ -1011,6 +1111,10 @@
                         title="Load every ready deployment into the combined database">
                     Ingest All
                 </button>
+                <button class="ghost-btn" id="btn-batch-open"
+                        title="Reprocess several deployments one after another">
+                    Batch Run
+                </button>
                 <div class="status-pill">
                     <div class="status-dot"></div>
                     <span>System Online</span>
@@ -1031,6 +1135,60 @@
             </div>
             <pre id="ingest-log"
                  style="margin-top:.75rem; max-height:180px; overflow:auto;
+                        font-size:.78rem; line-height:1.45; white-space:pre-wrap;
+                        color:var(--text-muted);"></pre>
+        </div>
+
+        <!-- Batch run panel: pick deployments, optionally wipe each output/
+             first, run them strictly one after another. Hidden until the
+             header button is used, or until a batch is found already running
+             (another tab, or a page reload mid-run). -->
+        <div id="batch-panel" class="glass-card"
+             style="display:none; margin-bottom:1.5rem;">
+            <div class="section-title">
+                <span>Batch Reprocess</span>
+                <span id="batch-pct"
+                      style="margin-left:auto; font-variant-numeric:tabular-nums;">idle</span>
+            </div>
+
+            <p class="batch-warn" id="batch-warn">
+                Runs sequentially, one deployment at a time. A full run takes
+                minutes per deployment &mdash; leave this page open or reattach
+                later, the run continues on the server either way.
+            </p>
+
+            <div class="batch-opts">
+                <label title="Delete each deployment's output/ before its run, so nothing from the previous run survives">
+                    <input type="checkbox" id="batch-reset" checked>
+                    Delete <code>output/</code> first (clean reprocess)
+                </label>
+                <label title="Load every ready deployment into the combined database once the batch finishes">
+                    <input type="checkbox" id="batch-ingest" checked>
+                    Ingest into the database afterwards
+                </label>
+                <label>
+                    <input type="checkbox" id="batch-select-all" checked>
+                    Select all
+                </label>
+            </div>
+
+            <div class="batch-list" id="batch-list">
+                <span style="color:var(--text-muted); font-size:.8rem;">Loading deployments&hellip;</span>
+            </div>
+
+            <div class="batch-actions">
+                <button class="danger-btn" id="btn-batch-start">Start Batch Run</button>
+                <button class="ghost-btn" id="btn-batch-cancel" style="display:none;">Cancel</button>
+                <button class="ghost-btn" id="btn-batch-close">Close</button>
+                <span id="batch-current" style="font-size:.78rem; color:var(--text-secondary);"></span>
+            </div>
+
+            <div style="height:6px; background:rgba(255,255,255,.08); border-radius:3px; overflow:hidden; margin-top:1rem;">
+                <div id="batch-bar"
+                     style="height:100%; width:0%; background:var(--accent-cyan); transition:width .3s;"></div>
+            </div>
+            <pre id="batch-log"
+                 style="margin-top:.75rem; max-height:200px; overflow:auto;
                         font-size:.78rem; line-height:1.45; white-space:pre-wrap;
                         color:var(--text-muted);"></pre>
         </div>
@@ -1131,7 +1289,17 @@
                                 <h2 id="process-glider-title">Glider 1130</h2>
                                 <p id="process-glider-subtitle">Status: Ready to process</p>
                             </div>
-                            <button class="process-btn" id="btn-start-process">Run Pipeline</button>
+                            <div style="display:flex; gap:.75rem; align-items:center;">
+                                <!-- Deleting output/ is what makes a re-run a
+                                     clean one: the steps overwrite by name, so
+                                     anything the new run does not rewrite would
+                                     otherwise survive from the previous one. -->
+                                <button class="danger-btn" id="btn-reset-output"
+                                        title="Delete this deployment's output/ folder">
+                                    Delete output/
+                                </button>
+                                <button class="process-btn" id="btn-start-process">Run Pipeline</button>
+                            </div>
                         </div>
                     </div>
 
@@ -1156,7 +1324,31 @@
 
                 <!-- 2. Main Processing Visualizations Workspace (Shown for processed gliders) -->
                 <div class="main-workspace" id="visualizations-workspace">
-                    
+
+                    <!-- Deployment toolbar: reprocessing a deployment that is
+                         already processed is reached from here, since the
+                         console header above is only shown while a deployment
+                         is unprocessed or running. -->
+                    <div class="glass-card"
+                         style="display:flex; align-items:center; gap:1rem; padding:1rem 1.5rem;">
+                        <div>
+                            <div style="font-family:var(--font-outfit); font-size:1.15rem; font-weight:600;"
+                                 id="viz-deployment-title">Deployment</div>
+                            <div style="font-size:.78rem; color:var(--text-secondary);"
+                                 id="viz-deployment-sub">Processed products shown below</div>
+                        </div>
+                        <div style="margin-left:auto; display:flex; gap:.6rem; align-items:center;">
+                            <button class="danger-btn" id="btn-reset-output-viz"
+                                    title="Delete this deployment's output/ folder">
+                                Delete output/
+                            </button>
+                            <button class="ghost-btn" id="btn-rerun-viz"
+                                    title="Delete output/ and run the pipeline again">
+                                Clean re-run
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- Top Metric Stats (changes dynamically) -->
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -1378,9 +1570,12 @@
             setupEventListeners();
             refreshDbStatus();
             setupIngestControls();
-            // Recover the panel if an ingest was already running when this
-            // page loaded (e.g. started from another tab, or --ingest-now).
+            setupBatchControls();
+            // Recover the panels if work was already running when this page
+            // loaded (started from another tab, --ingest-now, or a reload
+            // mid-batch). The server owns the run; this page just reattaches.
             pollIngestOnce(true);
+            pollBatchOnce(true);
         });
 
         // ── Combined database status ────────────────────────────────
@@ -1504,6 +1699,304 @@
                 .catch(() => {});
         }
 
+        // ── Reset: delete one deployment's output/ ──────────────────
+        //
+        // The server refuses unless the folder name is echoed back in the body,
+        // so an accidental POST cannot wipe a deployment. The browser confirm
+        // here is the second half of that: the name typed into the request is
+        // the one the user just agreed to.
+        function resetOutput(folderName, opts) {
+            const thenRun = !!(opts && opts.thenRun);
+            const msg = thenRun
+                ? `Delete ${folderName}/output/ and run the pipeline again?\n\n` +
+                  `Every product, plot, report and the per-deployment database ` +
+                  `for ${folderName} is removed, then regenerated from the raw ` +
+                  `binaries. The raw data and the combined database are not touched.`
+                : `Delete ${folderName}/output/ ?\n\n` +
+                  `Every product, plot, report and the per-deployment database ` +
+                  `for ${folderName} is removed. The raw binaries, deployment.yml ` +
+                  `and the combined database are not touched.\n\n` +
+                  `This cannot be undone from here — the products have to be ` +
+                  `regenerated by re-running the pipeline.`;
+            if (!confirm(msg)) return;
+
+            setResetButtonsBusy(true);
+
+            fetch(`/api/reset/${encodeURIComponent(folderName)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: folderName })
+            })
+                .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, d })))
+                .then(({ ok, status, d }) => {
+                    setResetButtonsBusy(false);
+                    if (!ok) {
+                        alert(`Could not delete output/ (${status}):\n` +
+                              `${d.error || 'unknown error'}` +
+                              (d.hint ? `\n\n${d.hint}` : ''));
+                        return;
+                    }
+                    const freed = d.existed
+                        ? `Deleted ${d.output_dir}\nFreed ${d.freed_mb} MB.`
+                        : `Nothing to delete — ${folderName} had no output/.`;
+
+                    // The deployment is unprocessed again, so re-read the list
+                    // before doing anything else with it.
+                    fetch('/api/transects')
+                        .then(r => r.json())
+                        .then(data => {
+                            transectData = data;
+                            renderTransectsList();
+                            const t = transectData.find(
+                                x => x.folder_name === folderName);
+                            if (t) selectTransect(t);
+                            if (thenRun && t) {
+                                startProcessing();
+                            } else {
+                                alert(freed);
+                            }
+                        });
+                })
+                .catch(err => {
+                    setResetButtonsBusy(false);
+                    alert(`Request failed: ${err}`);
+                });
+        }
+
+        function setResetButtonsBusy(busy) {
+            ['btn-reset-output', 'btn-reset-output-viz', 'btn-rerun-viz']
+                .forEach(id => {
+                    const b = document.getElementById(id);
+                    if (b) b.disabled = busy;
+                });
+        }
+
+        // ── Batch reprocess ─────────────────────────────────────────
+
+        let batchPollInterval = null;
+        let batchFollowing = null;   // deployment whose console is on screen
+
+        function setupBatchControls() {
+            const open = document.getElementById('btn-batch-open');
+            if (open) open.addEventListener('click', () => {
+                showBatchPanel(true);
+                loadBatchCandidates();
+            });
+
+            const close = document.getElementById('btn-batch-close');
+            if (close) close.addEventListener('click', () => showBatchPanel(false));
+
+            const start = document.getElementById('btn-batch-start');
+            if (start) start.addEventListener('click', startBatch);
+
+            const cancel = document.getElementById('btn-batch-cancel');
+            if (cancel) cancel.addEventListener('click', cancelBatch);
+
+            const all = document.getElementById('batch-select-all');
+            if (all) all.addEventListener('change', () => {
+                document.querySelectorAll('#batch-list input[type=checkbox]')
+                    .forEach(cb => { cb.checked = all.checked; });
+            });
+        }
+
+        function showBatchPanel(visible) {
+            const p = document.getElementById('batch-panel');
+            if (p) p.style.display = visible ? '' : 'none';
+        }
+
+        function loadBatchCandidates() {
+            const list = document.getElementById('batch-list');
+            fetch('/api/batch/candidates')
+                .then(r => r.json())
+                .then(d => {
+                    if (!d.candidates || !d.candidates.length) {
+                        list.innerHTML =
+                            `<span style="color:var(--accent-orange); font-size:.8rem;">` +
+                            `No deployment folders found in ${d.data_dir}.</span>`;
+                        return;
+                    }
+                    const allChecked =
+                        document.getElementById('batch-select-all').checked;
+                    list.innerHTML = d.candidates.map(c => {
+                        const note = c.has_output
+                            ? `${c.processed ? 'processed' : 'partial'} · ${c.output_mb} MB`
+                            : 'no output';
+                        return `<label title="${c.folder_name}">
+                                  <input type="checkbox" value="${c.folder_name}"
+                                         ${allChecked ? 'checked' : ''}>
+                                  <span>${c.folder_name}</span>
+                                  <span class="dep-note">${note}</span>
+                                </label>`;
+                    }).join('');
+                })
+                .catch(() => {
+                    list.innerHTML =
+                        `<span style="color:var(--accent-red); font-size:.8rem;">` +
+                        `Could not load the deployment list.</span>`;
+                });
+        }
+
+        function startBatch() {
+            const names = Array.from(document.querySelectorAll(
+                '#batch-list input[type=checkbox]:checked')).map(cb => cb.value);
+            if (!names.length) {
+                alert('Select at least one deployment.');
+                return;
+            }
+            const doReset = document.getElementById('batch-reset').checked;
+            const doIngest = document.getElementById('batch-ingest').checked;
+
+            let msg = `Run the pipeline on ${names.length} deployment` +
+                      `${names.length === 1 ? '' : 's'}, one after another?\n\n` +
+                      names.join(', ');
+            if (doReset) {
+                msg += `\n\nEach deployment's output/ is DELETED before its run. ` +
+                       `All products, plots, reports and per-deployment databases ` +
+                       `are regenerated from the raw binaries. The raw data and ` +
+                       `the combined database are not touched.`;
+            }
+            if (!confirm(msg)) return;
+
+            const btn = document.getElementById('btn-batch-start');
+            btn.disabled = true;
+            btn.textContent = 'Starting…';
+
+            fetch('/api/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deployments: names,
+                                       reset: doReset, ingest: doIngest })
+            })
+                .then(r => r.json().then(d => ({ ok: r.ok, status: r.status, d })))
+                .then(({ ok, status, d }) => {
+                    if (!ok) {
+                        document.getElementById('batch-log').textContent =
+                            `${status}: ${d.error || 'batch could not start'}` +
+                            (d.hint ? `\n${d.hint}` : '');
+                        resetBatchButtons(false);
+                        return;
+                    }
+                    startBatchPolling();
+                })
+                .catch(err => {
+                    document.getElementById('batch-log').textContent =
+                        `request failed: ${err}`;
+                    resetBatchButtons(false);
+                });
+        }
+
+        function cancelBatch() {
+            if (!confirm('Stop the batch?\n\nThe deployment currently running ' +
+                         'is terminated, which leaves its output/ half-written — ' +
+                         'delete it before trusting anything in there. Queued ' +
+                         'deployments are skipped.')) return;
+            fetch('/api/batch/cancel', { method: 'POST' })
+                .then(r => r.json())
+                .then(() => {
+                    const c = document.getElementById('btn-batch-cancel');
+                    if (c) { c.disabled = true; c.textContent = 'Cancelling…'; }
+                });
+        }
+
+        function resetBatchButtons(running) {
+            const start = document.getElementById('btn-batch-start');
+            const cancel = document.getElementById('btn-batch-cancel');
+            if (start) {
+                start.disabled = running;
+                start.textContent = running ? 'Running…' : 'Start Batch Run';
+            }
+            if (cancel) {
+                cancel.style.display = running ? '' : 'none';
+                cancel.disabled = false;
+                cancel.textContent = 'Cancel';
+            }
+            // Selecting a different set mid-run would not affect the queue the
+            // server already holds, so the inputs are locked while it runs.
+            document.querySelectorAll(
+                '#batch-list input, #batch-reset, #batch-ingest, #batch-select-all')
+                .forEach(el => { el.disabled = running; });
+        }
+
+        function startBatchPolling() {
+            if (batchPollInterval) clearInterval(batchPollInterval);
+            pollBatchOnce(false);
+            batchPollInterval = setInterval(() => pollBatchOnce(false), 2000);
+        }
+
+        function pollBatchOnce(silentIfIdle) {
+            fetch('/api/batch/status')
+                .then(r => r.json())
+                .then(st => {
+                    const hasHistory = (st.done || []).length ||
+                                       (st.errors || []).length;
+                    if (silentIfIdle && !st.running && !hasHistory) return;
+
+                    showBatchPanel(true);
+                    resetBatchButtons(st.running);
+
+                    const bar = document.getElementById('batch-bar');
+                    const pct = document.getElementById('batch-pct');
+                    const log = document.getElementById('batch-log');
+                    const cur = document.getElementById('batch-current');
+                    if (bar) bar.style.width = `${st.progress}%`;
+                    if (pct) {
+                        const n = (st.done || []).length + (st.errors || []).length;
+                        pct.textContent = st.total
+                            ? `${st.progress}%  (${n}/${st.total})`
+                            : `${st.progress}%`;
+                    }
+                    if (cur) {
+                        cur.textContent = st.running && st.current
+                            ? `running: ${st.current}` +
+                              (st.queue.length ? ` · ${st.queue.length} queued` : '')
+                            : (st.running ? 'starting…' : '');
+                    }
+                    if (log) {
+                        log.textContent = st.log || '';
+                        log.scrollTop = log.scrollHeight;
+                    }
+
+                    if (st.running && !batchPollInterval) startBatchPolling();
+
+                    // Follow the batch: bring the deployment being processed
+                    // into the console so its live pipeline log is visible,
+                    // rather than leaving whatever was selected before.
+                    if (st.running && st.current && st.current !== batchFollowing) {
+                        batchFollowing = st.current;
+                        followDeployment(st.current);
+                    }
+
+                    if (!st.running) {
+                        if (batchPollInterval) {
+                            clearInterval(batchPollInterval);
+                            batchPollInterval = null;
+                        }
+                        batchFollowing = null;
+                        refreshDbStatus();
+                        fetchTransects(false);
+                        loadBatchCandidates();
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function followDeployment(name) {
+            // Re-read the list first: the deployment just changed state, and
+            // selectTransect decides which workspace to show from that state.
+            fetch('/api/transects')
+                .then(r => r.json())
+                .then(data => {
+                    transectData = data;
+                    const t = transectData.find(x => x.folder_name === name);
+                    renderTransectsList();
+                    if (t) {
+                        t.status = 'running';
+                        selectTransect(t);
+                    }
+                })
+                .catch(() => {});
+        }
+
         // Fetch data from Flask API
         function fetchTransects(selectFirst = false) {
             fetch('/api/transects')
@@ -1607,6 +2100,17 @@
 
                 // Update stats
                 const meta = transect.metadata;
+
+                // Deployment toolbar
+                document.getElementById("viz-deployment-title").innerText =
+                    `Glider ${meta.glider_id || transect.folder_name}`;
+                document.getElementById("viz-deployment-sub").innerText =
+                    `${transect.folder_name} · ${transect.plots.length} plot(s)` +
+                    (transect.deployment_db_mb
+                        ? ` · deployment DB ${transect.deployment_db_mb} MB` : '');
+                ["btn-reset-output-viz", "btn-rerun-viz"].forEach(id => {
+                    document.getElementById(id).disabled = !transect.has_output;
+                });
                 document.getElementById("stat-obs").innerText = meta.l0 ? parseInt(meta.l0.observations).toLocaleString() : '-';
                 document.getElementById("stat-duration").innerText = meta.l0 ? `Duration: ${meta.l0.duration}` : 'Duration: -';
                 
@@ -2066,6 +2570,18 @@
             const consoleBox = document.getElementById("process-progress-box");
             const term = document.getElementById("terminal-console-output");
 
+            const reset = document.getElementById("btn-reset-output");
+            if (reset) {
+                // Nothing to delete without an output/, and deleting during a
+                // run would race the pipeline writing into it — the server
+                // refuses that too, this just doesn't offer it.
+                reset.disabled = !activeTransect.has_output ||
+                                 activeTransect.status === 'running';
+                reset.title = activeTransect.has_output
+                    ? `Delete ${activeTransect.folder_name}/output/`
+                    : 'No output/ folder to delete';
+            }
+
             if (activeTransect.status === 'unprocessed') {
                 sub.innerText = "Status: Ready to Process";
                 btn.style.display = "block";
@@ -2101,8 +2617,20 @@
             document.getElementById("btn-start-process").innerText = "Starting...";
 
             fetch(`/api/process/${gliderId}`, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
+                .then(res => res.json().then(d => ({ ok: res.ok, status: res.status, d })))
+                .then(({ ok, status, d }) => {
+                    if (!ok) {
+                        // The server refuses while a batch run holds the
+                        // machine, and reports a missing pipeline script here
+                        // too. Both used to be swallowed and shown as a run
+                        // that had started.
+                        alert(`Could not start the pipeline (${status}):\n` +
+                              `${d.error || 'unknown error'}` +
+                              (d.hint ? `\n\n${d.hint}` : ''));
+                        document.getElementById("btn-start-process").disabled = false;
+                        document.getElementById("btn-start-process").innerText = "Run Pipeline";
+                        return;
+                    }
                     activeTransect.status = 'running';
                     updateConsoleUI();
                     startPollingStatus();
@@ -2184,6 +2712,20 @@
             // Processing trigger button
             document.getElementById("btn-start-process").onclick = () => {
                 startProcessing();
+            };
+
+            // Reset (delete output/) — offered from both workspaces, since the
+            // console header is hidden once a deployment is processed.
+            document.getElementById("btn-reset-output").onclick = () => {
+                if (activeTransect) resetOutput(activeTransect.folder_name, {});
+            };
+            document.getElementById("btn-reset-output-viz").onclick = () => {
+                if (activeTransect) resetOutput(activeTransect.folder_name, {});
+            };
+            document.getElementById("btn-rerun-viz").onclick = () => {
+                if (activeTransect) {
+                    resetOutput(activeTransect.folder_name, { thenRun: true });
+                }
             };
 
             // Sidebar tabs (Processed vs Unprocessed)

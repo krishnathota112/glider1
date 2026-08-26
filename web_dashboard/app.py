@@ -2,6 +2,8 @@ import os
 import re
 import sys
 import glob
+import time
+import shutil
 import threading
 import subprocess
 from datetime import datetime
@@ -280,12 +282,98 @@ def deployment_root(name):
     base = os.path.join(RAW_DATA_DIR, os.path.basename(name))
     if os.path.isdir(os.path.join(base, 'output')):
         return base
-    if os.path.isdir(base):
-        for child in sorted(os.listdir(base)):
-            nested = os.path.join(base, child)
-            if os.path.isdir(os.path.join(nested, 'output')):
-                return nested
+    if not os.path.isdir(base):
+        return base
+
+    for child in sorted(os.listdir(base)):
+        nested = os.path.join(base, child)
+        if os.path.isdir(os.path.join(nested, 'output')):
+            return nested
+
+    # No output/ anywhere — which is exactly the state a reset leaves behind,
+    # and the state a fresh deployment arrives in. Resolving nesting purely by
+    # looking for output/ breaks here: the folder would resolve to the outer
+    # directory, and the re-run would then decode from the outer level and write
+    # its products beside the real deployment instead of inside it. So fall back
+    # to the markers of the raw inputs, which a reset never removes.
+    if _has_raw_markers(base):
+        return base
+    for child in sorted(os.listdir(base)):
+        nested = os.path.join(base, child)
+        if _has_raw_markers(nested):
+            return nested
     return base
+
+
+# Raw glider binaries, per pipeline/config.py _BINARY_EXTS.
+_BINARY_EXTS = ('.dcd', '.ecd', '.dbd', '.ebd')
+
+
+def _has_raw_markers(path):
+    """
+    Whether a directory holds a deployment's raw inputs.
+
+    Only the things a pipeline run consumes rather than produces, so this
+    answer is stable across a delete-output-and-reprocess cycle.
+    """
+    if not os.path.isdir(path):
+        return False
+    if os.path.exists(os.path.join(path, 'deployment.yml')):
+        return True
+    if os.path.isdir(os.path.join(path, 'combined_binary')):
+        return True
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file() and entry.name.lower().endswith(_BINARY_EXTS):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def looks_like_deployment(name):
+    """
+    Whether a subdirectory of RAW_DATA_DIR is a deployment the pipeline can run.
+
+    Raw_Data holds housekeeping folders alongside the real deployments
+    (Calibration_details_glider, for one). A batch run must not launch the
+    pipeline on those, so a folder has to show at least one marker of being
+    glider data: a deployment.yml, a collected combined_binary/, an existing
+    output/, or raw binaries / NetCDF sitting within two levels.
+    """
+    root = deployment_root(name)
+    if not os.path.isdir(root):
+        return False
+    if os.path.isdir(os.path.join(root, 'output')) or _has_raw_markers(root):
+        return True
+    # Also accept a bare NetCDF, for deployments handed over as an L0 product
+    # rather than as binaries. Shallow scan only: some deployment folders carry
+    # thousands of files and this runs per folder on every /api/transects call.
+    try:
+        for entry in os.scandir(root):
+            if entry.is_file() and entry.name.lower().endswith('.nc'):
+                return True
+            if entry.is_dir():
+                try:
+                    for sub in os.scandir(entry.path):
+                        if sub.is_file() and sub.name.lower().endswith('.nc'):
+                            return True
+                except OSError:
+                    continue
+    except OSError:
+        return False
+    return False
+
+
+def deployment_folders(only_deployments=True):
+    """Subdirectory names of RAW_DATA_DIR, in sorted order."""
+    if not os.path.isdir(RAW_DATA_DIR):
+        return []
+    names = sorted(n for n in os.listdir(RAW_DATA_DIR)
+                   if os.path.isdir(os.path.join(RAW_DATA_DIR, n)))
+    if only_deployments:
+        names = [n for n in names if looks_like_deployment(n)]
+    return names
 
 
 @app.route('/api/transects')
@@ -346,6 +434,12 @@ def get_transects():
             'folder_name': name,
             'status': status,
             'metadata': summary_data,
+            # Whether there is anything for the reset button to delete. Only an
+            # isdir() here on purpose: measuring the size means walking every
+            # profile NetCDF of every deployment, and this endpoint is hit on
+            # each page load. /api/batch/candidates reports the sizes.
+            'has_output': os.path.isdir(out_dir),
+            'runnable': looks_like_deployment(name),
             'deployment_db': dep_db if os.path.exists(dep_db) else None,
             'deployment_db_mb': (round(os.path.getsize(dep_db) / (1024 * 1024), 1)
                                  if os.path.exists(dep_db) else None),
@@ -368,31 +462,48 @@ def serve_plot(transect, filename):
         abort(404)
     return send_from_directory(plots_dir, safe_filename)
 
-@app.route('/api/process/<glider_id>', methods=['POST'])
-def process_transect(glider_id):
-    safe_glider_id = os.path.basename(glider_id)
-    folder_path = deployment_root(safe_glider_id)
-    if not os.path.exists(folder_path):
-        return jsonify({"error": "Transect directory not found"}), 404
-        
-    if safe_glider_id in active_processes and active_processes[safe_glider_id]["status"] == "running":
-        return jsonify({"status": "running", "message": "Already running"})
-        
+def _pipeline_log_path(safe_glider_id):
     log_dir = os.path.join(app.root_path, 'logs')
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"{safe_glider_id}.log")
-    
-    # Initialize log file
-    with open(log_path, 'w', encoding='utf-8') as f:
-        f.write(f"============================================================\n")
-        f.write(f" STARTING PIPELINE PROCESSING FOR GLIDER {safe_glider_id}\n")
-        f.write(f"============================================================\n\n")
-        
+    return os.path.join(log_dir, f"{safe_glider_id}.log")
+
+
+def _close_log(info):
+    """Release our end of a run's log file, once."""
+    log_file = info.pop("log_file", None)
+    if log_file is not None and not log_file.closed:
+        log_file.close()
+
+
+def _launch_pipeline(safe_glider_id):
+    """
+    Start a pipeline run for one deployment and register it in
+    active_processes.
+
+    Returns (info, error). Shared by POST /api/process/<id> and the batch
+    runner, so a batch run and a single click are the same code path: same log
+    file, same progress markers, same /api/status/<id> behaviour. A batch that
+    launched the pipeline its own way would eventually disagree with the
+    single-deployment view about what a run looks like.
+    """
+    folder_path = deployment_root(safe_glider_id)
+    if not os.path.isdir(folder_path):
+        return None, "deployment directory not found"
+
+    existing = active_processes.get(safe_glider_id)
+    if existing and existing["status"] == "running" \
+            and existing["process"].poll() is None:
+        return None, "already running"
+
     if not os.path.exists(PIPELINE_SCRIPT):
-        return jsonify({
-            "error": f"pipeline script not found: {PIPELINE_SCRIPT}. "
-                     f"Set GLIDER_PIPELINE to its location."
-        }), 500
+        return None, (f"pipeline script not found: {PIPELINE_SCRIPT}. "
+                      f"Set GLIDER_PIPELINE to its location.")
+
+    log_path = _pipeline_log_path(safe_glider_id)
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write("=" * 60 + "\n")
+        f.write(f" STARTING PIPELINE PROCESSING FOR GLIDER {safe_glider_id}\n")
+        f.write("=" * 60 + "\n\n")
 
     cmd = [PYTHON, PIPELINE_SCRIPT, "--data-dir", folder_path]
 
@@ -407,17 +518,36 @@ def process_transect(glider_id):
     except OSError as exc:
         # Don't leak the handle when the process never starts.
         log_file.close()
-        return jsonify({"error": f"could not start pipeline: {exc}"}), 500
+        return None, f"could not start pipeline: {exc}"
 
-    # Keep the handle so process_status can close it once the run ends —
-    # previously it was left open for the lifetime of the server, leaking one
-    # file descriptor per launch.
-    active_processes[safe_glider_id] = {
+    # Keep the handle so the status endpoint (or the batch worker) can close it
+    # once the run ends — previously it was left open for the lifetime of the
+    # server, leaking one file descriptor per launch.
+    info = {
         "process": proc,
         "status": "running",
         "log_path": log_path,
         "log_file": log_file,
     }
+    active_processes[safe_glider_id] = info
+    return info, None
+
+
+@app.route('/api/process/<glider_id>', methods=['POST'])
+def process_transect(glider_id):
+    safe_glider_id = os.path.basename(glider_id)
+
+    if batch_state["running"]:
+        return jsonify({"error": "a batch run is in progress",
+                        "current": batch_state["current"]}), 409
+
+    info, err = _launch_pipeline(safe_glider_id)
+    if err == "already running":
+        return jsonify({"status": "running", "message": "Already running"})
+    if err == "deployment directory not found":
+        return jsonify({"error": "Transect directory not found"}), 404
+    if err:
+        return jsonify({"error": err}), 500
 
     return jsonify({"status": "running", "message": "Processing started"})
 
@@ -440,9 +570,7 @@ def process_status(glider_id):
     if poll is not None:
         info["status"] = "completed" if poll == 0 else "failed"
         # The child has exited; release our end of the log file.
-        log_file = info.pop("log_file", None)
-        if log_file is not None and not log_file.closed:
-            log_file.close()
+        _close_log(info)
 
 
     log_content = ""
@@ -481,6 +609,129 @@ def process_status(glider_id):
         "progress": progress,
         "log": log_content
     })
+
+
+# ── Reset: delete a deployment's output/ ────────────────────────────
+#
+# Reprocessing from scratch has to start from an empty output/. Steps write
+# with os.makedirs(exist_ok=True) and overwrite by name, so a re-run over a
+# populated output/ leaves behind anything the new run does not happen to
+# rewrite — plots for parameters no longer present, reports from the previous
+# config, products in the legacy flat layout. Those stale files then show up in
+# the dashboard and get ingested as if current.
+
+def _dir_size(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def _reset_output(folder_name):
+    """
+    Delete one deployment's output/ directory.
+
+    Removed:
+        <deployment>/output/            all L0/L1 products, plots, reports and
+                                        the per-deployment .db inside it
+        web_dashboard/logs/<name>.log   this dashboard's own run log
+
+    Never touched: the raw binaries, deployment.yml, cache/, and the combined
+    database — that one lives in Raw_Data beside the deployment folders rather
+    than inside any of them, so a reset cannot take it along.
+
+    Raises ValueError if the request is refused; the caller turns that into a
+    409 or a batch error rather than deleting something unintended.
+    """
+    safe = os.path.basename(folder_name)
+    root = deployment_root(safe)
+    if not os.path.isdir(root):
+        raise ValueError(f"deployment directory not found: {safe}")
+
+    out_dir = os.path.join(root, 'output')
+    real_out = os.path.realpath(out_dir)
+    real_raw = os.path.realpath(RAW_DATA_DIR)
+
+    # The folder name arrives from a URL and deployment_root() resolves one
+    # level of nesting, so the path that is actually about to be removed is
+    # checked, not the one that was asked for.
+    if os.path.basename(real_out) != 'output':
+        raise ValueError(f"refusing to delete non-output path: {real_out}")
+    if not (real_out + os.sep).startswith(real_raw + os.sep):
+        raise ValueError(
+            f"refusing to delete outside the data root {real_raw}: {real_out}")
+    if os.path.islink(out_dir):
+        raise ValueError(f"refusing to follow a symlink: {out_dir}")
+
+    info = active_processes.get(safe)
+    if info and info["status"] == "running" and info["process"].poll() is None:
+        raise ValueError("a pipeline run is still in progress for this "
+                         "deployment — wait for it to finish")
+
+    existed = os.path.isdir(real_out)
+    freed = _dir_size(real_out) if existed else 0
+    if existed:
+        shutil.rmtree(real_out)
+
+    # Drop our own bookkeeping too. Without this the deployment keeps the
+    # 'completed' status of the run whose products just went away, so the UI
+    # would offer 'Re-run' over an empty output/ and report it as finished.
+    old = active_processes.pop(safe, None)
+    if old:
+        _close_log(old)
+    log_path = _pipeline_log_path(safe)
+    if os.path.exists(log_path):
+        try:
+            os.remove(log_path)
+        except OSError:
+            pass
+
+    return {
+        "folder_name": safe,
+        "output_dir": real_out,
+        "existed": existed,
+        "freed_mb": round(freed / (1024 * 1024), 1),
+    }
+
+
+@app.route('/api/reset/<glider_id>', methods=['POST'])
+def reset_transect(glider_id):
+    """
+    Delete a deployment's output/ so the pipeline can run clean.
+
+    Destructive and irreversible from here, so it is POST-only and the caller
+    must echo the folder name back:
+
+        POST /api/reset/1126   {"confirm": "1126"}
+
+    The products are regenerable from the raw binaries, but a run takes
+    minutes, which is why a bare POST is not enough.
+    """
+    safe = os.path.basename(glider_id)
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != safe:
+        return jsonify({
+            "error": "confirmation required",
+            "hint": f'POST {{"confirm": "{safe}"}} to delete {safe}/output/',
+        }), 400
+
+    if batch_state["running"]:
+        return jsonify({"error": "a batch run is in progress",
+                        "current": batch_state["current"]}), 409
+
+    try:
+        res = _reset_output(safe)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except OSError as exc:
+        return jsonify({"error": f"delete failed: {exc}"}), 500
+
+    return jsonify({"status": "deleted", **res})
+
 
 # ── Ingestion ───────────────────────────────────────────────────────
 #
@@ -597,6 +848,289 @@ def ingest_status():
     )
     st["database"] = db_path()
     return jsonify(st)
+
+
+# ── Batch run ───────────────────────────────────────────────────────
+#
+# Reprocessing every deployment one browser click at a time means watching for
+# each run to finish before starting the next. This runs the whole set in one
+# go, strictly sequentially: a pipeline run saturates a core and holds the
+# NetCDF/plotting stack, and several at once on the same machine trade a
+# throughput gain for memory pressure and interleaved logs.
+#
+# Each deployment goes through _launch_pipeline, the same path as a single
+# click, so /api/status/<id> keeps working per deployment while the batch runs
+# and the console shows the live log of whichever one is current.
+
+_batch_lock = threading.Lock()
+batch_state = {
+    "running": False,
+    "cancel": False,
+    "started_at": None,
+    "finished_at": None,
+    "current": None,
+    "queue": [],
+    "reset": False,
+    "ingest": False,
+    "done": [],       # [{folder_name, status, elapsed_s, freed_mb}]
+    "errors": [],     # [{folder_name, error}]
+    "log": [],
+}
+
+
+def _batch_log(msg):
+    batch_state["log"].append(
+        f"{datetime.now().strftime('%H:%M:%S')}  {msg}")
+    if len(batch_state["log"]) > 1000:
+        del batch_state["log"][:-1000]
+
+
+def _wait_with_cancel(proc):
+    """
+    Wait for a pipeline run, staying responsive to a cancel request.
+
+    proc.wait() would block until the run ends, which for a full deployment is
+    minutes — long enough that a cancel button that only took effect afterwards
+    would be useless.
+    """
+    while proc.poll() is None:
+        if batch_state["cancel"]:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            return proc.poll(), True
+        time.sleep(1)
+    return proc.poll(), False
+
+
+def _run_batch(names, do_reset, do_ingest):
+    """Worker: reset (optional) and run the pipeline for each deployment."""
+    batch_state.update(running=True, cancel=False,
+                       started_at=datetime.now().isoformat(),
+                       finished_at=None, current=None, queue=list(names),
+                       reset=bool(do_reset), ingest=bool(do_ingest),
+                       done=[], errors=[], log=[])
+    _batch_log(f"{len(names)} deployment(s) queued: {', '.join(names)}")
+    if do_reset:
+        _batch_log("each output/ will be deleted before its run")
+    if do_ingest:
+        _batch_log("the combined database will be refreshed at the end")
+
+    try:
+        for name in names:
+            if batch_state["cancel"]:
+                _batch_log("cancelled — remaining deployments skipped")
+                break
+
+            batch_state["current"] = name
+            if name in batch_state["queue"]:
+                batch_state["queue"].remove(name)
+
+            t0 = time.time()
+            freed_mb = None
+            try:
+                if do_reset:
+                    r = _reset_output(name)
+                    freed_mb = r["freed_mb"]
+                    _batch_log(f"{name}: removed output/ ({r['freed_mb']} MB)"
+                               if r["existed"]
+                               else f"{name}: no output/ to remove")
+
+                info, err = _launch_pipeline(name)
+                if err:
+                    raise RuntimeError(err)
+
+                _batch_log(f"{name}: pipeline running (pid "
+                           f"{info['process'].pid}) — live log in the console")
+                rc, cancelled = _wait_with_cancel(info["process"])
+                _close_log(info)
+
+                if cancelled:
+                    info["status"] = "failed"
+                    batch_state["errors"].append(
+                        {"folder_name": name, "error": "cancelled"})
+                    _batch_log(f"{name}: terminated by cancel")
+                    continue
+
+                elapsed = time.time() - t0
+                info["status"] = "completed" if rc == 0 else "failed"
+                if rc == 0:
+                    batch_state["done"].append({
+                        "folder_name": name,
+                        "status": "completed",
+                        "elapsed_s": round(elapsed, 1),
+                        "freed_mb": freed_mb,
+                    })
+                    _batch_log(f"{name}: COMPLETED in {elapsed:.0f}s")
+                else:
+                    batch_state["errors"].append({
+                        "folder_name": name,
+                        "error": f"pipeline exited {rc} after {elapsed:.0f}s "
+                                 f"— see the console log for this deployment",
+                    })
+                    _batch_log(f"{name}: FAILED (exit {rc}) after "
+                               f"{elapsed:.0f}s")
+            except Exception as exc:
+                batch_state["errors"].append(
+                    {"folder_name": name,
+                     "error": f"{type(exc).__name__}: {exc}"})
+                _batch_log(f"{name}: ERROR {type(exc).__name__}: {exc}")
+
+        _batch_log(f"batch complete: {len(batch_state['done'])} ok, "
+                   f"{len(batch_state['errors'])} failed")
+
+        # Ingest last, once, rather than after each deployment: the loader
+        # upserts on glider_id, so a single pass at the end picks up everything
+        # that just succeeded and costs one database write cycle instead of N.
+        if do_ingest and not batch_state["cancel"]:
+            if _ingest_lock.acquire(blocking=False):
+                try:
+                    _batch_log("ingesting every ready deployment ...")
+                    _run_ingest(ingestible_deployments())
+                    _batch_log(f"ingest: {len(ingest_state['done'])} ok, "
+                               f"{len(ingest_state['errors'])} failed")
+                finally:
+                    _ingest_lock.release()
+            else:
+                _batch_log("skipped ingest: another ingestion is running")
+    finally:
+        batch_state["current"] = None
+        batch_state["running"] = False
+        batch_state["cancel"] = False
+        batch_state["finished_at"] = datetime.now().isoformat()
+
+
+@app.route('/api/batch/candidates')
+def batch_candidates():
+    """Every deployment folder the pipeline can be run on, and its state."""
+    out = []
+    for name in deployment_folders():
+        root = deployment_root(name)
+        out_dir = os.path.join(root, 'output')
+        plots = _layout.plots_dir(out_dir)
+        has_plots = os.path.isdir(plots) and any(
+            f.endswith('.png') for f in os.listdir(plots))
+        out.append({
+            "folder_name": name,
+            "processed": has_plots,
+            "has_output": os.path.isdir(out_dir),
+            "output_mb": (round(_dir_size(out_dir) / (1024 * 1024), 1)
+                          if os.path.isdir(out_dir) else 0),
+        })
+    return jsonify({"data_dir": RAW_DATA_DIR, "candidates": out})
+
+
+@app.route('/api/batch', methods=['POST'])
+def batch_start():
+    """
+    Start a sequential batch run.
+
+    Body:
+      {"all": true}                       every deployment folder
+      {"deployments": ["1126", ...]}      just these
+      {"reset": true}                     delete each output/ first
+      {"ingest": true}                    refresh the combined database after
+    """
+    if batch_state["running"]:
+        return jsonify({"error": "a batch run is already in progress",
+                        "current": batch_state["current"]}), 409
+
+    running_single = [g for g, i in active_processes.items()
+                      if i["status"] == "running" and i["process"].poll() is None]
+    if running_single:
+        return jsonify({
+            "error": "a pipeline run is already in progress: "
+                     + ", ".join(running_single),
+            "hint": "wait for it to finish, or reload after it completes",
+        }), 409
+
+    body = request.get_json(silent=True) or {}
+    available = deployment_folders()
+
+    if body.get("all"):
+        names = available
+    else:
+        wanted = [os.path.basename(w) for w in (body.get("deployments") or [])]
+        if not wanted:
+            return jsonify({
+                "error": "provide 'deployments': [...] or 'all': true"}), 400
+        names = [n for n in available if n in set(wanted)]
+        missing = set(wanted) - set(names)
+        if missing:
+            return jsonify({
+                "error": "not a runnable deployment folder: "
+                         + ", ".join(sorted(missing)),
+                "available": available,
+            }), 404
+
+    if not names:
+        return jsonify({
+            "error": "no deployment folders found",
+            "hint": f"looked in {RAW_DATA_DIR}",
+        }), 404
+
+    if not os.path.exists(PIPELINE_SCRIPT):
+        return jsonify({
+            "error": f"pipeline script not found: {PIPELINE_SCRIPT}. "
+                     f"Set GLIDER_PIPELINE to its location."}), 500
+
+    # Guard the lock rather than the flag above: two POSTs arriving together
+    # could both pass that check before either sets running=True.
+    if not _batch_lock.acquire(blocking=False):
+        return jsonify({"error": "a batch run is already in progress"}), 409
+
+    do_reset = bool(body.get("reset"))
+    do_ingest = bool(body.get("ingest"))
+
+    def _worker():
+        try:
+            _run_batch(names, do_reset, do_ingest)
+        finally:
+            _batch_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    return jsonify({
+        "status": "started",
+        "deployments": names,
+        "reset": do_reset,
+        "ingest": do_ingest,
+    })
+
+
+@app.route('/api/batch/status')
+def batch_status():
+    st = {k: v for k, v in batch_state.items()}
+    st["log"] = "\n".join(batch_state["log"])
+    total = (len(st["done"]) + len(st["errors"]) + len(st["queue"])
+             + (1 if st["current"] else 0))
+    finished = len(st["done"]) + len(st["errors"])
+    st["total"] = total
+    st["progress"] = (
+        100 if (not st["running"] and total and not st["queue"])
+        else int(100 * finished / total) if total else 0
+    )
+    return jsonify(st)
+
+
+@app.route('/api/batch/cancel', methods=['POST'])
+def batch_cancel():
+    """
+    Stop the batch.
+
+    The deployment currently running is terminated, which leaves its output/
+    half-written — reset it before trusting anything in there. Queued
+    deployments are simply skipped.
+    """
+    if not batch_state["running"]:
+        return jsonify({"error": "no batch run in progress"}), 409
+    batch_state["cancel"] = True
+    _batch_log("cancel requested — stopping after the current deployment "
+               "is terminated")
+    return jsonify({"status": "cancelling", "current": batch_state["current"]})
 
 
 @app.route('/api/db/summary')
