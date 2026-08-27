@@ -289,12 +289,13 @@ def _draw_pcolormesh(ax, t_vals, depth_vals, V, cmap, label, max_depth):
         print(f"    {label}: nulled {n_phys_bad} physically-impossible values before colorscale")
 
     # Suppress isolated depth artefacts: NaN out depth bins where fewer than
-    # 10% of profiles have data (removes interpolation artefacts and pressure
-    # spike horizontal lines)
+    # 3% of profiles have data (removes interpolation artefacts and pressure
+    # spike horizontal lines). Previously used 10% which was too aggressive
+    # and blanked plots on deployments with variable dive depths.
     n_profiles = V_trim.shape[0]
-    if n_profiles > 5:
+    if n_profiles > 10:
         col_counts = np.sum(np.isfinite(V_trim), axis=0).astype(float)
-        sparse_bins = col_counts < max(n_profiles * 0.10, 3)
+        sparse_bins = col_counts < max(n_profiles * 0.03, 2)
         V_trim[:, sparse_bins] = np.nan
 
     V_trim = _mask_time_gaps(V_trim, t_vals, GAP_THRESHOLD_HOURS)
