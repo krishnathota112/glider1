@@ -37,27 +37,34 @@ GAP_THRESHOLD_HOURS = 48
 # For each "slot", we try names in order until one is found in the dataset.
 PLOT_SLOTS = [
     # (slot_label, [candidate_var_names], cmap)
-    ("temperature",  ["temperature", "potential_temperature", "sci_water_temp"], "RdYlBu_r"),
-    ("salinity",     ["salinity", "practical_salinity"], "viridis"),
-    ("oxygen",       ["oxygen_concentration", "dissolved_oxygen", "sci_oxy4_oxygen"], "viridis"),
-    ("chlorophyll",  ["chlorophyll", "chlorophyll_flntu", "sci_flbbcd_chlor_units"], "viridis"),
-    ("cdom",         ["cdom", "sci_flbbcd_cdom_units"], "RdBu_r"),
+    ("temperature",    ["temperature", "potential_temperature", "TEMP", "sci_water_temp"], "RdYlBu_r"),
+    ("salinity",       ["salinity", "practical_salinity", "PSAL", "CNDC"], "viridis"),
+    ("oxygen",         ["oxygen_concentration", "dissolved_oxygen", "DOXY", "sci_oxy4_oxygen"], "viridis"),
+    ("chlorophyll",    ["chlorophyll", "chlorophyll_flntu", "CHLA", "sci_flbbcd_chlor_units"], "viridis"),
+    ("cdom",           ["cdom", "CDOM", "sci_flbbcd_cdom_units"], "RdBu_r"),
+    ("backscatter",    ["backscatter_700", "BBP700", "sci_flbbcd_bb_units"], "cividis"),
 ]
 
 VAR_LABELS = {
     "potential_temperature": "Potential Temperature [°C]",
     "temperature":           "Temperature [°C]",
+    "TEMP":                  "Temperature [°C]",
     "salinity":              "Salinity [PSU]",
     "practical_salinity":    "Salinity [PSU]",
+    "PSAL":                  "Salinity [PSU]",
     "oxygen_concentration":  "Oxygen [µmol/L]",
     "dissolved_oxygen":      "Oxygen [µmol/L]",
+    "DOXY":                  "Oxygen [µmol/L]",
     "sci_oxy4_oxygen":       "Oxygen [µmol/L]",
     "chlorophyll":           "Chlorophyll [mg/m³]",
     "chlorophyll_flntu":     "Chlorophyll FLNTU [mg/m³]",
+    "CHLA":                  "Chlorophyll [mg/m³]",
     "sci_flbbcd_chlor_units": "Chlorophyll [mg/m³]",
     "cdom":                  "CDOM [ppb]",
+    "CDOM":                  "CDOM [ppb]",
     "sci_flbbcd_cdom_units": "CDOM [ppb]",
     "backscatter_700":       "Backscatter 700nm [m⁻¹]",
+    "BBP700":                "Backscatter 700nm [m⁻¹]",
 }
 
 # Physical plausibility ranges for plot variables.
@@ -67,18 +74,24 @@ VAR_LABELS = {
 _PLOT_PHYS_RANGE = {
     "temperature":           (-3.0,   40.0),
     "potential_temperature": (-3.0,   40.0),
+    "TEMP":                  (-3.0,   40.0),
     "sci_water_temp":        (-3.0,   40.0),
     "salinity":              ( 0.0,   45.0),
     "practical_salinity":    ( 0.0,   45.0),
+    "PSAL":                  ( 0.0,   45.0),
     "oxygen_concentration":  (-5.0,  700.0),
     "dissolved_oxygen":      (-5.0,  700.0),
+    "DOXY":                  (-5.0,  700.0),
     "sci_oxy4_oxygen":       (-5.0,  700.0),
     "chlorophyll":           (-1.0,  200.0),
+    "CHLA":                  (-1.0,  200.0),
     "chlorophyll_flntu":     (-1.0,  200.0),
     "sci_flbbcd_chlor_units":(-1.0,  200.0),
     "cdom":                  (-1.0,  500.0),
+    "CDOM":                  (-1.0,  500.0),
     "sci_flbbcd_cdom_units": (-1.0,  500.0),
     "backscatter_700":       (-0.01,   1.0),
+    "BBP700":                (-0.01,   1.0),
 }
 
 

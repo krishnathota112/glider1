@@ -120,38 +120,56 @@ def _max_data_depth(V, depth_vals, coverage_threshold=0.10):
     return float(depth_vals[col].max()) if col.any() else float(depth_vals.max())
 
 
-_VAR_FALLBACKS_7 = {
-    "potential_temperature": "temperature",
-    "potential_density": "density",
-    "oxygen_concentration": "sci_oxy4_oxygen",
-    "chlorophyll": "sci_flbbcd_chlor_units",
-    "cdom": "sci_flbbcd_cdom_units",
-    "backscatter_700": "sci_flbbcd_bb_units",
+# All known aliases for each conceptual variable, for grid lookup.
+# Step7 asks for a canonical name; the grid may use any of these.
+_VAR_ALIASES = {
+    "potential_temperature": ["potential_temperature", "temperature", "TEMP", "sci_water_temp"],
+    "salinity":             ["salinity", "practical_salinity", "PSAL"],
+    "oxygen_concentration": ["oxygen_concentration", "dissolved_oxygen", "DOXY", "sci_oxy4_oxygen"],
+    "oxygen_concentration_lag_corrected": ["oxygen_concentration_lag_corrected", "DOXY_lag_corrected"],
+    "chlorophyll":          ["chlorophyll", "CHLA", "sci_flbbcd_chlor_units", "chlorophyll_flntu"],
+    "cdom":                 ["cdom", "CDOM", "sci_flbbcd_cdom_units"],
+    "backscatter_700":      ["backscatter_700", "BBP700", "sci_flbbcd_bb_units"],
+    "potential_density":    ["potential_density", "density", "DENSITY"],
 }
 
 
 def _var_in_grid(grid, var):
-    """Check if a variable (or its fallback) exists in the grid."""
+    """Check if a variable (or any of its aliases) exists in the grid."""
     if var in grid:
         return True
-    fb = _VAR_FALLBACKS_7.get(var)
-    return fb is not None and fb in grid
+    for aliases in _VAR_ALIASES.values():
+        if var in aliases:
+            for alias in aliases:
+                if alias in grid:
+                    return True
+            break
+    return False
 
 
 def _get_2d(grid, var):
     """
     Return the 2D (n_time, n_depth) array for `var` from grid.
-    Tries fallback variable names if primary not found.
+    Tries all known aliases for the variable.
     Returns None if the variable is missing or not 2D time×depth.
     """
-    # Try primary name, then fallback
-    actual = var
-    if var not in grid:
-        fb = _VAR_FALLBACKS_7.get(var)
-        if fb and fb in grid:
-            actual = fb
-        else:
-            return None
+    # Try exact name first
+    actual = None
+    if var in grid:
+        actual = var
+    else:
+        # Search aliases
+        for aliases in _VAR_ALIASES.values():
+            if var in aliases:
+                for alias in aliases:
+                    if alias in grid:
+                        actual = alias
+                        break
+                break
+
+    if actual is None:
+        return None
+
     v = grid[actual].values
     if v.ndim != 2 or v.shape != (len(grid.time), len(grid.depth)):
         return None
@@ -190,8 +208,21 @@ def _contour_section(grid, var, title, units, cmap_name,
         print(f"  SKIP: {var} not in grid")
         return None
 
-    # Resolve actual variable name (may be a fallback)
-    actual_var = var if var in grid else _VAR_FALLBACKS_7.get(var, var)
+    # Resolve actual variable name (may be an alias)
+    actual_var = None
+    if var in grid:
+        actual_var = var
+    else:
+        for aliases in _VAR_ALIASES.values():
+            if var in aliases:
+                for alias in aliases:
+                    if alias in grid:
+                        actual_var = alias
+                        break
+                break
+    if actual_var is None:
+        print(f"  SKIP: {var} not resolvable in grid")
+        return None
     V = grid[actual_var].values.copy()
     T = grid.time.values
     D = grid.depth.values
